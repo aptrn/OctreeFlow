@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Description>Octree-based point cloud processing library for VVVV Gamma</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Stride.Core.Mathematics" Version="4.2.0.2122" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>
+
