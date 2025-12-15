@@ -81,6 +81,33 @@ public class PlyIndex : IDisposable
     }
 
     /// <summary>
+    /// Builds only the header index without computing bounds.
+    /// Useful when bounds are already known (e.g., from an octree file).
+    /// </summary>
+    public void BuildIndexHeaderOnly()
+    {
+        _stream = File.OpenRead(_filePath);
+        _reader = new BinaryReader(_stream, Encoding.ASCII, leaveOpen: true);
+
+        // Parse header
+        ParseHeader();
+
+        // Build property index map
+        BuildPropertyMap();
+
+        // Don't compute bounds - leave at default
+        // Bounds can be set externally if needed
+    }
+
+    /// <summary>
+    /// Sets the bounds externally (used when bounds are loaded from octree file).
+    /// </summary>
+    public void SetBounds(BoundingBox bounds)
+    {
+        Bounds = bounds;
+    }
+
+    /// <summary>
     /// Single-pass: builds index, computes bounds, AND writes positions cache file.
     /// Much more efficient than separate operations.
     /// </summary>
@@ -380,10 +407,17 @@ public class PlyIndex : IDisposable
     /// </summary>
     public void StreamVertices(Action<int, Vector3, float[]> onVertex, Action<int, int>? onProgress = null)
     {
-        if (_stream == null || _reader == null)
+        if (_stream == null)
             throw new InvalidOperationException("Index not built");
 
+        // Reset stream position and recreate BinaryReader to clear its internal buffer
+        // BinaryReader buffers data, so changing stream position directly can cause issues
         _stream.Position = DataStartOffset;
+        
+        // Recreate BinaryReader to reset its internal buffer state
+        _reader?.Dispose();
+        _reader = new BinaryReader(_stream, Encoding.ASCII, leaveOpen: true);
+        
         int reportInterval = Math.Max(1, VertexCount / 100);
 
         if (Format == PlyFormat.Ascii)
@@ -430,24 +464,107 @@ public class PlyIndex : IDisposable
     {
         if (_stream == null || _reader == null) return;
 
+        // Reset to start of data
+        _stream.Position = DataStartOffset;
+        
         bool bigEndian = Format == PlyFormat.BinaryBigEndian;
 
-        for (int i = 0; i < VertexCount; i++)
+        // Verify we have enough data in the file
+        long expectedDataSize = (long)VertexCount * BytesPerVertex;
+        long availableDataSize = _stream.Length - DataStartOffset;
+        
+        if (availableDataSize < expectedDataSize)
         {
-            var values = ReadVertexBinary(bigEndian);
-            var pos = new Vector3(
-                _xIndex >= 0 ? values[_xIndex] : 0,
-                _yIndex >= 0 ? values[_yIndex] : 0,
-                _zIndex >= 0 ? values[_zIndex] : 0
-            );
-
-            onVertex(i, pos, values);
-
-            if (i % reportInterval == 0)
-                onProgress?.Invoke(i, VertexCount);
+            throw new InvalidOperationException(
+                $"PLY file appears truncated: expected {expectedDataSize} bytes of vertex data " +
+                $"(starting at offset {DataStartOffset}), but only {availableDataSize} bytes available. " +
+                $"File size: {_stream.Length} bytes, VertexCount: {VertexCount}, BytesPerVertex: {BytesPerVertex}");
         }
 
-        onProgress?.Invoke(VertexCount, VertexCount);
+        long startPosition = _stream.Position;
+        
+        for (int i = 0; i < VertexCount; i++)
+        {
+            // Check if we have enough bytes remaining
+            long bytesRemaining = _stream.Length - _stream.Position;
+            if (bytesRemaining < BytesPerVertex)
+            {
+                long bytesRead = _stream.Position - startPosition;
+                long expectedBytes = (long)VertexCount * BytesPerVertex;
+                throw new InvalidOperationException(
+                    $"Unexpected end of file while reading vertex {i} of {VertexCount}. " +
+                    $"Position: {_stream.Position}, File size: {_stream.Length}, " +
+                    $"Bytes remaining: {bytesRemaining}, BytesPerVertex: {BytesPerVertex}. " +
+                    $"Bytes read so far: {bytesRead}, Expected total: {expectedBytes}");
+            }
+
+            try
+            {
+                var values = ReadVertexBinary(bigEndian);
+                var pos = new Vector3(
+                    _xIndex >= 0 ? values[_xIndex] : 0,
+                    _yIndex >= 0 ? values[_yIndex] : 0,
+                    _zIndex >= 0 ? values[_zIndex] : 0
+                );
+
+                onVertex(i, pos, values);
+
+                if (i % reportInterval == 0)
+                    onProgress?.Invoke(i, VertexCount);
+            }
+            catch (IOException ex)
+            {
+                // Catch ALL IOExceptions
+                long bytesRead = _stream.Position - startPosition;
+                long expectedBytes = (long)VertexCount * BytesPerVertex;
+                throw new InvalidOperationException(
+                    $"Error reading vertex {i} of {VertexCount} at stream position {_stream.Position}. " +
+                    $"File length: {_stream.Length}, BytesPerVertex: {BytesPerVertex}, " +
+                    $"Properties.Count: {Properties.Count}. " +
+                    $"Bytes read so far: {bytesRead}, Expected total: {expectedBytes}. " +
+                    $"IOException message: {ex.Message}. " +
+                    $"This may indicate the PLY file is truncated or the header information is incorrect.", ex);
+            }
+            catch (Exception ex)
+            {
+                // Catch any other exceptions too
+                long bytesRead = _stream.Position - startPosition;
+                long expectedBytes = (long)VertexCount * BytesPerVertex;
+                throw new InvalidOperationException(
+                    $"Unexpected error reading vertex {i} of {VertexCount} at stream position {_stream.Position}. " +
+                    $"File length: {_stream.Length}, BytesPerVertex: {BytesPerVertex}, " +
+                    $"Properties.Count: {Properties.Count}. " +
+                    $"Bytes read so far: {bytesRead}, Expected total: {expectedBytes}. " +
+                    $"Exception type: {ex.GetType().Name}, Message: {ex.Message}.", ex);
+            }
+        }
+
+        // Verify we read exactly the expected number of bytes
+        long totalBytesRead = _stream.Position - startPosition;
+        long expectedTotalBytes = (long)VertexCount * BytesPerVertex;
+        long bytesRemainingAfterRead = _stream.Length - _stream.Position;
+        
+        if (totalBytesRead != expectedTotalBytes)
+        {
+            // This is a warning, not an error, as the file might have extra data
+            // But log it for debugging
+            System.Diagnostics.Debug.WriteLine(
+                $"Warning: Read {totalBytesRead} bytes but expected {expectedTotalBytes} bytes " +
+                $"({totalBytesRead - expectedTotalBytes} bytes difference). " +
+                $"Bytes remaining in file: {bytesRemainingAfterRead}");
+        }
+
+        try
+        {
+            onProgress?.Invoke(VertexCount, VertexCount);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Error in final progress callback after reading all vertices. " +
+                $"Total bytes read: {totalBytesRead}, Expected: {expectedTotalBytes}, " +
+                $"Bytes remaining: {bytesRemainingAfterRead}. Error: {ex.Message}", ex);
+        }
     }
 
     private Vector3 ParsePositionFromAscii(string[] values)
@@ -491,12 +608,36 @@ public class PlyIndex : IDisposable
 
     private float[] ReadVertexBinary(bool bigEndian)
     {
-        if (_reader == null) return Array.Empty<float>();
+        if (_reader == null || _stream == null) return Array.Empty<float>();
 
         var values = new float[Properties.Count];
         for (int i = 0; i < Properties.Count; i++)
         {
-            values[i] = ReadBinaryValue(_reader, Properties[i].Type, bigEndian);
+            long positionBeforeRead = _stream.Position;
+            try
+            {
+                values[i] = ReadBinaryValue(_reader, Properties[i].Type, bigEndian);
+            }
+            catch (EndOfStreamException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to read property '{Properties[i].Name}' (index {i}) of vertex at stream position {positionBeforeRead}. " +
+                    $"Current position: {_stream.Position}, File length: {_stream.Length}. " +
+                    $"Expected BytesPerVertex: {BytesPerVertex}, Properties.Count: {Properties.Count}. " +
+                    $"Property type: {Properties[i].Type}, ByteSize: {Properties[i].ByteSize}. " +
+                    $"This may indicate the PLY file is truncated or the header information is incorrect.", ex);
+            }
+            catch (IOException ex)
+            {
+                // Catch ALL IOExceptions (EndOfStreamException is already caught above)
+                throw new InvalidOperationException(
+                    $"Failed to read property '{Properties[i].Name}' (index {i}) of vertex at stream position {positionBeforeRead}. " +
+                    $"Current position: {_stream.Position}, File length: {_stream.Length}. " +
+                    $"Expected BytesPerVertex: {BytesPerVertex}, Properties.Count: {Properties.Count}. " +
+                    $"Property type: {Properties[i].Type}, ByteSize: {Properties[i].ByteSize}. " +
+                    $"IOException message: {ex.Message}. " +
+                    $"This may indicate the PLY file is truncated or the header information is incorrect.", ex);
+            }
         }
         return values;
     }

@@ -44,8 +44,20 @@ public class OctreeNode
 
     /// <summary>
     /// Indices of points assigned to this node.
+    /// Not serialized to JSON (too large) - use PointCount instead.
     /// </summary>
+    [JsonIgnore]
     public List<int> PointIndices { get; set; }
+
+    /// <summary>
+    /// Number of points in this node. Used in JSON serialization.
+    /// </summary>
+    public int PointCount
+    {
+        get => PointIndices?.Count ?? _pointCount;
+        set => _pointCount = value;
+    }
+    private int _pointCount;
 
     /// <summary>
     /// Depth level in the octree (0 = root).
@@ -95,12 +107,6 @@ public class OctreeNode
     /// </summary>
     [JsonIgnore]
     public bool IsLeaf => Children.Count == 0;
-
-    /// <summary>
-    /// Returns the number of points in this node.
-    /// </summary>
-    [JsonIgnore]
-    public int PointCount => PointIndices.Count;
 
     /// <summary>
     /// Adds a point index to this node.

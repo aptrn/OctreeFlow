@@ -1,4 +1,5 @@
 using System.CommandLine;
+using OctreeFlow.Api;
 using OctreeFlow.Core;
 using OctreeFlow.IO;
 
@@ -17,6 +18,10 @@ class Program
         // Info command
         var infoCommand = CreateInfoCommand();
         rootCommand.AddCommand(infoCommand);
+
+        // Traverse command (demo API)
+        var traverseCommand = CreateTraverseCommand();
+        rootCommand.AddCommand(traverseCommand);
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -271,12 +276,38 @@ class Program
         }
         catch (Exception ex)
         {
+            stopwatch.Stop();
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Failed!");
+            
+            // Show the full exception message (which should include our detailed info)
             Console.WriteLine($"Error: {ex.Message}");
+            
+            // If there's an inner exception, show it too
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"Inner exception type: {ex.InnerException.GetType().Name}");
+                Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+            }
+            
+            // Always show exception type for debugging
+            Console.WriteLine($"Exception type: {ex.GetType().Name}");
+            
             if (verbose)
-                Console.WriteLine(ex.StackTrace);
+            {
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                if (ex.InnerException != null)
+                    Console.WriteLine($"Inner stack trace: {ex.InnerException.StackTrace}");
+            }
             Console.ResetColor();
+            
+            // Check if file was created despite error
+            var octreeFile = new FileInfo(output + ".octree");
+            if (octreeFile.Exists)
+            {
+                Console.WriteLine($"Note: .octree file was created ({FormatFileSize(octreeFile.Length)}) but may be incomplete.");
+            }
+            
             return Task.CompletedTask;
         }
 
@@ -426,5 +457,206 @@ class Program
         if (time.TotalSeconds >= 1)
             return $"{time.TotalSeconds:F1} seconds";
         return $"{time.TotalMilliseconds:F0}ms";
+    }
+
+    static Command CreateTraverseCommand()
+    {
+        var octreeOption = new Option<FileInfo>(
+            aliases: new[] { "--octree", "-o" },
+            description: "Input .octree file path")
+        { IsRequired = true };
+
+        var plyOption = new Option<FileInfo>(
+            aliases: new[] { "--ply", "-p" },
+            description: "Input .ply file path")
+        { IsRequired = true };
+
+        var maxDepthOption = new Option<int>(
+            aliases: new[] { "--max-depth", "-d" },
+            getDefaultValue: () => 3,
+            description: "Maximum depth to traverse");
+
+        var cacheSizeOption = new Option<int>(
+            aliases: new[] { "--cache-size", "-c" },
+            getDefaultValue: () => 256,
+            description: "RAM cache size in MB");
+
+        var gpuSizeOption = new Option<int>(
+            aliases: new[] { "--gpu-size", "-g" },
+            getDefaultValue: () => 128,
+            description: "GPU buffer size in MB");
+
+        var traverseCommand = new Command("traverse", "Traverse an octree and demonstrate the API")
+        {
+            octreeOption,
+            plyOption,
+            maxDepthOption,
+            cacheSizeOption,
+            gpuSizeOption
+        };
+
+        traverseCommand.SetHandler(async (context) =>
+        {
+            var octree = context.ParseResult.GetValueForOption(octreeOption)!;
+            var ply = context.ParseResult.GetValueForOption(plyOption)!;
+            var maxDepth = context.ParseResult.GetValueForOption(maxDepthOption);
+            var cacheSize = context.ParseResult.GetValueForOption(cacheSizeOption);
+            var gpuSize = context.ParseResult.GetValueForOption(gpuSizeOption);
+
+            await DemoTraversal(octree, ply, maxDepth, cacheSize, gpuSize);
+        });
+
+        return traverseCommand;
+    }
+
+    static async Task DemoTraversal(
+        FileInfo octreeFile,
+        FileInfo plyFile,
+        int maxDepth,
+        int cacheSizeMB,
+        int gpuSizeMB)
+    {
+        if (!octreeFile.Exists)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error: Octree file not found: {octreeFile.FullName}");
+            Console.ResetColor();
+            return;
+        }
+
+        if (!plyFile.Exists)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error: PLY file not found: {plyFile.FullName}");
+            Console.ResetColor();
+            return;
+        }
+
+        Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║              OctreeFlow API Demo (Traversal)                 ║");
+        Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        Console.WriteLine($"Octree:      {octreeFile.FullName}");
+        Console.WriteLine($"PLY:         {plyFile.FullName}");
+        Console.WriteLine($"Max depth:   {maxDepth}");
+        Console.WriteLine($"Cache size:  {cacheSizeMB} MB");
+        Console.WriteLine($"GPU size:    {gpuSizeMB} MB");
+        Console.WriteLine();
+
+        try
+        {
+            Console.Write("Initializing reader... ");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            
+            using var reader = new OctreeFlowReader(
+                octreeFile.FullName,
+                plyFile.FullName,
+                cacheSizeMB,
+                gpuSizeMB);
+
+            await reader.InitializeAsync((current, total) =>
+            {
+                int percent = total > 0 ? (int)(100.0 * current / total) : 0;
+                Console.Write($"\rInitializing reader... {percent}%   ");
+            });
+
+            sw.Stop();
+            Console.WriteLine($"\rInitializing reader... Done! ({FormatTime(sw.Elapsed)})");
+            Console.WriteLine();
+
+            Console.WriteLine($"Total nodes:  {reader.TotalNodes:N0}");
+            Console.WriteLine($"Total points: {reader.TotalPoints:N0}");
+            Console.WriteLine($"Bounds:       {reader.Bounds.Minimum} - {reader.Bounds.Maximum}");
+            Console.WriteLine();
+
+            // Define a traversal delegate that accepts nodes up to maxDepth
+            // and marks leaf nodes or nodes at maxDepth for display
+            Console.WriteLine($"Traversing (max depth = {maxDepth})...");
+            sw.Restart();
+
+            var traversalResult = reader.Traverse(nodeInfo =>
+            {
+                // Accept all nodes up to maxDepth
+                bool accept = nodeInfo.Level <= maxDepth;
+                
+                // Mark for display if at the target depth or is a leaf
+                bool display = accept && (nodeInfo.Level == maxDepth || nodeInfo.IsLeaf);
+                
+                // Continue to children only if not at max depth
+                bool continueChildren = nodeInfo.Level < maxDepth;
+
+                return new TraversalDecision(accept, display, continueChildren);
+            });
+
+            sw.Stop();
+            Console.WriteLine($"Traversal complete! ({traversalResult.TraversalTimeMs}ms)");
+            Console.WriteLine($"  Nodes visited:  {traversalResult.NodesVisited:N0}");
+            Console.WriteLine($"  Nodes accepted: {traversalResult.NodesAccepted:N0}");
+            Console.WriteLine($"  Caching nodes:  {traversalResult.CachingNodes.Count:N0} ({traversalResult.TotalCachingPoints:N0} points)");
+            Console.WriteLine($"  Viewing nodes:  {traversalResult.ViewingNodes.Count:N0} ({traversalResult.TotalViewingPoints:N0} points)");
+            Console.WriteLine();
+
+            // Load to cache
+            Console.Write("Loading to cache... ");
+            sw.Restart();
+
+            var cacheResult = await reader.LoadToCacheAsync(traversalResult.CachingNodes);
+
+            sw.Stop();
+            Console.WriteLine($"Done! ({cacheResult.LoadTimeMs}ms)");
+            Console.WriteLine($"  Nodes loaded:  {cacheResult.NodesLoaded:N0}");
+            Console.WriteLine($"  Points loaded: {cacheResult.TotalPointsLoaded:N0}");
+            Console.WriteLine($"  Cache version: {cacheResult.Version}");
+            Console.WriteLine();
+
+            // Load to GPU (simulated - no actual GPU upload)
+            Console.Write("Allocating GPU sectors... ");
+            sw.Restart();
+
+            int sectorDataCount = 0;
+            var gpuResult = await reader.LoadToGpuAsync(
+                traversalResult.ViewingNodes,
+                (sectorIndex, nodeId, pointData) =>
+                {
+                    // This callback would normally upload data to actual GPU
+                    sectorDataCount++;
+                });
+
+            sw.Stop();
+            Console.WriteLine($"Done! ({gpuResult.LoadTimeMs}ms)");
+            Console.WriteLine($"  Nodes loaded:   {gpuResult.NodesLoaded:N0}");
+            Console.WriteLine($"  Points on GPU:  {gpuResult.TotalPointsLoaded:N0}");
+            Console.WriteLine($"  Active sectors: {gpuResult.SectorActivations.Count(s => s.IsActive)}");
+            Console.WriteLine($"  GPU version:    {gpuResult.Version}");
+            Console.WriteLine();
+
+            // Display sector info
+            var activeSectors = gpuResult.SectorActivations.Where(s => s.IsActive).Take(10).ToList();
+            if (activeSectors.Any())
+            {
+                Console.WriteLine("Sample GPU sectors:");
+                foreach (var sector in activeSectors)
+                {
+                    Console.WriteLine($"  Sector {sector.SectorIndex}: Node {sector.NodeId}, {sector.PointCount:N0} points");
+                }
+                if (gpuResult.SectorActivations.Count(s => s.IsActive) > 10)
+                {
+                    Console.WriteLine($"  ... and {gpuResult.SectorActivations.Count(s => s.IsActive) - 10} more");
+                }
+            }
+
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("API demo complete!");
+            Console.ResetColor();
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\nError: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+            Console.ResetColor();
+        }
     }
 }
