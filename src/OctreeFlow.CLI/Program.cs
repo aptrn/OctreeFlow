@@ -650,6 +650,35 @@ class Program
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("API demo complete!");
             Console.ResetColor();
+
+            // Now demo the simpler UpdateFrame API
+            Console.WriteLine();
+            Console.WriteLine("═══════════════════════════════════════════════════════════════");
+            Console.WriteLine("  Demonstrating simplified UpdateFrame API (auto-managed GPU)");
+            Console.WriteLine("═══════════════════════════════════════════════════════════════");
+            Console.WriteLine();
+
+            // Simulate a few "frames" with different traversal depths
+            for (int frame = 0; frame < 3; frame++)
+            {
+                int targetDepth = 2 + frame; // Increasing depth each frame
+                
+                var frameResult = reader.UpdateFrame(nodeInfo =>
+                {
+                    bool accept = nodeInfo.Level <= targetDepth;
+                    bool display = accept && (nodeInfo.Level == targetDepth || nodeInfo.IsLeaf);
+                    bool continueChildren = nodeInfo.Level < targetDepth;
+                    return new TraversalDecision(accept, display, continueChildren);
+                });
+
+                Console.WriteLine($"Frame {frame + 1} (depth={targetDepth}):");
+                Console.WriteLine($"  Total time:        {frameResult.TotalTimeMs}ms");
+                Console.WriteLine($"  Viewing nodes:     {frameResult.Traversal.ViewingNodes.Count}");
+                Console.WriteLine($"  GPU uploads:       {frameResult.Uploads.Length}");
+                Console.WriteLine($"  Points on GPU:     {frameResult.TotalPointsOnGpu:N0}");
+                Console.WriteLine($"  Active sectors:    {frameResult.ActiveSectors.Length}");
+                Console.WriteLine();
+            }
         }
         catch (Exception ex)
         {
