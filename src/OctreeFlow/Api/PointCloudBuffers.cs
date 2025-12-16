@@ -209,7 +209,7 @@ public class PointCloudBuffers : IDisposable
             SizeInBytes = _totalCapacity * 12, // 12 bytes per Vector3
             StructureByteStride = 12,
             BufferFlags = BufferFlags.ShaderResource | BufferFlags.StructuredBuffer,
-            Usage = GraphicsResourceUsage.Dynamic
+            Usage = GraphicsResourceUsage.Default  // Required for SetData with offset
         };
 
         return GraphicsBuffer.New(_graphicsDevice, desc);
@@ -222,7 +222,7 @@ public class PointCloudBuffers : IDisposable
             SizeInBytes = _totalCapacity * 4, // 4 bytes per float
             StructureByteStride = 4,
             BufferFlags = BufferFlags.ShaderResource | BufferFlags.StructuredBuffer,
-            Usage = GraphicsResourceUsage.Dynamic
+            Usage = GraphicsResourceUsage.Default  // Required for SetData with offset
         };
 
         return GraphicsBuffer.New(_graphicsDevice, desc);
