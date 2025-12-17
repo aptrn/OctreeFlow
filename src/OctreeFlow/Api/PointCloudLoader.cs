@@ -331,6 +331,8 @@ public class PointCloudLoader : IDisposable
         }
 
         result.CacheVersion = _cache!.Version;
+        result.TotalNodesCached = _cache!.EntryCount;
+        result.TotalPointsCached = _cache!.TotalPointsCached;
 
         // 2. Upload to GPU
         result.BufferResult = _gpuBuffers!.Upload(
@@ -385,6 +387,8 @@ public class PointCloudLoader : IDisposable
         }
 
         result.CacheVersion = _cache!.Version;
+        result.TotalNodesCached = _cache!.EntryCount;
+        result.TotalPointsCached = _cache!.TotalPointsCached;
 
         // 2. Upload to GPU (must be on main thread)
         result.BufferResult = _gpuBuffers!.Upload(
@@ -510,14 +514,24 @@ public class CacheAndUploadResult
     public long TotalTimeMs { get; set; }
 
     /// <summary>
-    /// Number of nodes loaded to cache.
+    /// Number of nodes loaded to cache THIS FRAME (newly cached).
     /// </summary>
     public int NodesCached { get; set; }
 
     /// <summary>
-    /// Number of points loaded to cache.
+    /// Number of points loaded to cache THIS FRAME (newly cached).
     /// </summary>
     public int PointsCached { get; set; }
+
+    /// <summary>
+    /// TOTAL nodes currently in cache (cumulative).
+    /// </summary>
+    public int TotalNodesCached { get; set; }
+
+    /// <summary>
+    /// TOTAL points currently in cache (cumulative).
+    /// </summary>
+    public int TotalPointsCached { get; set; }
 
     /// <summary>
     /// Cache version after loading.

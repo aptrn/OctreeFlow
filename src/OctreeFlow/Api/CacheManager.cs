@@ -34,9 +34,14 @@ public class CacheManager : IDisposable
     public long CurrentSizeBytes => _currentSizeBytes;
 
     /// <summary>
-    /// Number of entries currently in cache.
+    /// Number of entries (nodes) currently in cache.
     /// </summary>
     public int EntryCount => _cache.Count;
+
+    /// <summary>
+    /// Total number of points across all cached nodes.
+    /// </summary>
+    public int TotalPointsCached => _cache.Values.Sum(e => e.PointIndices.Length);
 
     /// <summary>
     /// Creates a new cache manager with specified size in MB.
