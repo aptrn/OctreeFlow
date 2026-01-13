@@ -7,35 +7,48 @@ A C# library for octree-based point cloud processing, designed for use with **VV
 - **PLY File Support**: Read PLY files with support for positions, colors, normals, intensity, and custom scalar values
 - **Octree Generation**: Distance-based spatial partitioning with configurable parameters
 - **Binary Format**: Efficient `.octree` format for streaming and real-time navigation
-- **VVVV Gamma Compatible**: Uses Stride.Core.Mathematics types (Vector3, Color4, BoundingBox)
-- **Streaming API**: RAM cache and GPU sector management for real-time traversal
+- **VVVV Gamma Compatible**: Outputs data as `Vector4[]` and `float[]` arrays ready for `DynamicBufferAdvanced<T>`
+- **No GPU Dependencies**: Library handles traversal and caching only - you handle GPU upload in your patch
 
 ## VVVV Gamma API
 
-The `OctreeFlow.Api` namespace provides a complete API for real-time octree traversal and point cloud rendering with full GPU buffer management.
+The `OctreeFlow.Api` namespace provides a complete API for real-time octree traversal and RAM caching. GPU upload is handled by your vvvv gamma patch using `DynamicBufferAdvanced<T>`.
 
-### Workflow: PointCloudLoader
+### Workflow Overview
 
-The recommended workflow using `PointCloudLoader`:
+```
+┌────────────────┐    ┌────────────────┐    ┌────────────────┐
+│   Traversal    │───>│    Caching     │───>│  Buffer Data   │
+│   (Octree)     │    │    (RAM)       │    │  (Vector4[])   │
+└────────────────┘    └────────────────┘    └────────────────┘
+                                                     │
+                                                     v
+                                            ┌────────────────┐
+                                            │ DynamicBuffer  │
+                                            │ Advanced<T>    │
+                                            │ (Your Patch)   │
+                                            └────────────────┘
+```
+
+### Basic Usage with OctreeFlowReader
 
 ```csharp
 using OctreeFlow.Api;
-using Stride.Graphics;
 
-// 1. Create loader once
-var loader = new PointCloudLoader(
+// 1. Create reader once
+var reader = new OctreeFlowReader(
     octreePath: "pointcloud.octree",
     plyPath: "pointcloud.ply",
-    cacheSizeMB: 512,
-    gpuBufferSizeMB: 256,
-    maxPointsPerNode: 65536
+    cacheSizeMB: 512,      // RAM cache
+    bufferSizeMB: 256,     // Buffer allocation
+    maxPointsPerSector: 65536
 );
 
-// 2. Initialize with GraphicsDevice (once)
-loader.Initialize(graphicsDevice);
+// 2. Initialize (once)
+reader.Initialize();
 
-// 3. Each frame: Traverse
-var traversal = loader.Traverse(nodeInfo =>
+// 3. Each frame: UpdateFrame with your traversal logic
+var result = reader.UpdateFrame(nodeInfo =>
 {
     // Your LOD logic - e.g., based on camera distance
     bool accept = nodeInfo.Level <= targetDepth;
@@ -45,118 +58,102 @@ var traversal = loader.Traverse(nodeInfo =>
     return new TraversalDecision(accept, display, continueChildren);
 });
 
-// 4. Cache and Upload (async or sync)
-var result = await loader.CacheAndUploadAsync(commandList, traversal);
-// OR: var result = loader.CacheAndUpload(commandList, traversal);
+// 4. Upload new sectors to your DynamicBufferAdvanced
+foreach (var sector in result.NewSectors)
+{
+    // Upload to your buffers using byte offset
+    positionBuffer.SetData(sector.Positions, sector.ByteOffset);
+    colorBuffer.SetData(sector.Colors, sector.ByteOffset);
+    normalBuffer.SetData(sector.Normals, sector.ByteOffset);
+    intensityBuffer.SetData(sector.Intensities, sector.ByteOffset);
+}
 
 // 5. Render using active sectors
 foreach (var sector in result.ActiveSectors)
 {
     // sector.StartIndex - first point index in buffers
     // sector.PointCount - number of points to render
-    DrawInstanced(sector.StartIndex, sector.PointCount);
+    DrawPoints(sector.StartIndex, sector.PointCount);
 }
 ```
 
-### Separate Buffers Per Attribute
+### Buffer Data Output
 
-The loader creates separate buffers for each attribute:
+The library outputs data ready for vvvv gamma's `DynamicBufferAdvanced<T>`:
 
 ```csharp
-// Position buffer (Vector3 per point)
-Buffer positionBuffer = loader.PositionBuffer;
-
-// Color buffer (Vector3 RGB per point)
-Buffer colorBuffer = loader.ColorBuffer;
-
-// Normal buffer (Vector3 per point) - may be null
-Buffer normalBuffer = loader.NormalBuffer;
-
-// Scalar buffers (float per point)
-Buffer intensityBuffer = loader.GetScalarBuffer("intensity");
-
-// All scalar buffers
-var allScalars = loader.ScalarBuffers; // Dictionary<string, Buffer>
-
-// Check available properties
-bool hasNormals = loader.HasNormals;
-var scalarNames = loader.ScalarProperties; // e.g., ["intensity", "classification"]
+// Each SectorData contains:
+foreach (var sector in result.NewSectors)
+{
+    // For MutableArray<Vector4>
+    Vector4[] positions = sector.Positions;   // xyz + w padding
+    Vector4[] colors = sector.Colors;         // rgba
+    Vector4[] normals = sector.Normals;       // xyz + w padding
+    
+    // For MutableArray<Float32>
+    float[] intensities = sector.Intensities;
+    
+    // Additional scalars (e.g., classification)
+    Dictionary<string, float[]> scalars = sector.Scalars;
+    
+    // Where to write in buffer
+    int byteOffset = sector.ByteOffset;
+    int sectorIndex = sector.SectorIndex;
+    int pointCount = sector.PointCount;
+}
 ```
 
-### Shader Usage (SDSL)
+### Buffer Configuration
 
-```hlsl
-// Declare separate buffers
-StructuredBuffer<float3> PositionBuffer;
-StructuredBuffer<float3> ColorBuffer;
-StructuredBuffer<float3> NormalBuffer;
-StructuredBuffer<float> IntensityBuffer;
+```csharp
+// Get buffer configuration from reader
+var config = reader.BufferConfig;
 
-// In vertex shader - use SV_VertexID
-void VSMain(uint vertexId : SV_VertexID)
-{
-    float3 pos = PositionBuffer[vertexId];
-    float3 color = ColorBuffer[vertexId];
-    float3 normal = NormalBuffer[vertexId];
-    float intensity = IntensityBuffer[vertexId];
-}
+// Total buffer size needed (for creating DynamicBufferAdvanced)
+int totalCapacity = config.TotalCapacity;           // Points
+int bytesForVector4 = config.TotalBytesVector4;     // For position/color/normal buffers
+int bytesForFloat = config.TotalBytesFloat;         // For scalar buffers
+
+// Or create custom configuration
+var config = BufferConfiguration.FromBufferSize(
+    bufferSizeMB: 256,
+    maxPointsPerSector: 65536
+);
 ```
 
 ### Sector-Based Rendering
 
-The GPU buffers are divided into **sectors** (one per node):
+The buffers are divided into **sectors** (one per node):
 
 ```
 Buffer Layout:
 ┌──────────────┬──────────────┬──────────────┬───┐
 │   Sector 0   │   Sector 1   │   Sector 2   │...│
-│ StartIdx: 0  │ StartIdx: N  │ StartIdx: 2N │   │
+│ Offset: 0    │ Offset: 1MB  │ Offset: 2MB  │   │
 │ Points: 5000 │ Points: 3200 │ Points: 8000 │   │
 │ Node: "2_0"  │ Node: "2_1"  │ Node: "2_2"  │   │
 └──────────────┴──────────────┴──────────────┴───┘
 ```
 
-- Each sector can hold up to `maxPointsPerNode` points
-- Sectors are updated independently (no full buffer re-upload)
+- Each sector holds one node's worth of points
+- Use `ByteOffset` when calling `SetData` on `DynamicBufferAdvanced`
+- Use `StartIndex` and `PointCount` for rendering dispatch
 - LRU eviction when buffer is full
 
-### Result Information
+### Active Sectors for Rendering
 
 ```csharp
-var result = loader.CacheAndUpload(commandList, traversal);
-
-// Active sectors for rendering
+// Active sectors to render this frame
 foreach (var sector in result.ActiveSectors)
 {
-    sector.SectorIndex;  // Sector index
-    sector.StartIndex;   // First point in buffer
-    sector.PointCount;   // Points to render
-    sector.NodeId;       // Octree node ID
-    sector.Level;        // Node depth level
+    sector.SectorIndex;       // Index in buffer
+    sector.StartIndex;        // First point index (element)
+    sector.ByteOffsetVector4; // Byte offset for Vector4 buffers
+    sector.ByteOffsetFloat;   // Byte offset for float buffers
+    sector.PointCount;        // Points to render
+    sector.NodeId;            // Octree node ID
+    sector.Level;             // Node depth level
 }
-
-// Statistics
-result.TotalPointsOnGpu;  // Total points in GPU buffers
-result.SectorsUploaded;   // Sectors uploaded this frame
-result.NodesCached;       // Nodes loaded to RAM cache
-result.TotalTimeMs;       // Total processing time
-```
-
-### Advanced: Direct Buffer Access
-
-For custom rendering pipelines:
-
-```csharp
-// Access the buffer manager
-var gpuBuffers = loader.GpuBuffers;
-
-// Buffer info
-int sectorCount = gpuBuffers.SectorCount;
-int sectorSize = gpuBuffers.SectorSizePoints;
-int totalCapacity = gpuBuffers.TotalCapacity;
-
-// Check if specific node is loaded
-bool isLoaded = gpuBuffers.Contains("2_0_1_0");
 ```
 
 ### Traversal Delegate
@@ -171,30 +168,76 @@ The traversal delegate receives a `NodeInfo` object with:
 
 Returns a `TraversalDecision`:
 - `IsAccepted`: Include in caching nodes
-- `IsForDisplay`: Include in viewing nodes (for GPU)
+- `IsForDisplay`: Include in viewing nodes (for buffer)
 - `ContinueToChildren`: Recurse into children
 
-### GPU Sector System
-
-The GPU buffer is divided into sectors, each holding one node's worth of points:
-
+**Predefined decisions:**
 ```csharp
-// Sector info
-var activeSectors = reader.GpuManager.GetActiveSectors();
-var sectorActivations = reader.GpuManager.GetSectorActivations();
-
-// Check if node is on GPU
-bool onGpu = reader.GpuManager.Contains(nodeId);
-int sectorIndex = reader.GpuManager.GetSectorForNode(nodeId);
+TraversalDecision.Reject;           // Skip node, stop here
+TraversalDecision.CacheOnly;        // Cache but don't display, continue to children
+TraversalDecision.DisplayAndContinue; // Display and continue to children
+TraversalDecision.DisplayAndStop;   // Display and stop (leaf-like)
+TraversalDecision.SkipButContinue;  // Skip node but continue to children
 ```
 
-### GPU-Ready Point Format
+### Async Operations
 
 ```csharp
-// Convert to GPU format (44 bytes per point)
-var gpuPoints = GpuPointData.FromPointDataArray(pointData);
-byte[] rawData = GpuPointData.ToByteArray(pointData);
+// Async frame update (cache loading in background)
+var result = await reader.UpdateFrameAsync(traversalDelegate, cancellationToken);
+
+// Or separate async cache loading
+var cacheResult = await reader.LoadToCacheAsync(nodes, cancellationToken);
 ```
+
+### Result Information
+
+```csharp
+var result = reader.UpdateFrame(traversalDelegate);
+
+// New data to upload this frame
+result.HasNewData;              // True if NewSectors.Length > 0
+result.NewSectors;              // SectorData[] to upload
+
+// Active sectors for rendering
+result.ActiveSectors;           // SectorInfo[] to render
+result.TotalPointsInBuffer;     // Total points across all sectors
+
+// Timing
+result.TotalTimeMs;             // Total processing time
+
+// Traversal stats
+result.Traversal.NodesVisited;
+result.Traversal.NodesAccepted;
+result.Traversal.ViewingNodes;   // Nodes for display
+result.Traversal.CachingNodes;   // Nodes to cache
+
+// Cache stats  
+result.CacheResult.LoadedNodes;
+```
+
+## VVVV Gamma Integration Example
+
+In your vvvv gamma patch:
+
+1. **Create Reader** (once in Create region):
+   - Use `OctreeFlowReader` constructor
+   - Call `Initialize()`
+
+2. **Create Buffers** (once in Create region):
+   - Create `DynamicBufferAdvanced<Vector4>` for positions, colors, normals
+   - Create `DynamicBufferAdvanced<Float32>` for intensity/scalars
+   - Use `BufferConfig.TotalBytesVector4` and `TotalBytesFloat` for sizes
+
+3. **Update Loop** (per frame):
+   - Call `UpdateFrame()` with your traversal delegate
+   - For each `NewSector`: call `SetData` on buffers with `ByteOffset`
+   - Use `ActiveSectors` for rendering dispatch
+
+4. **Render**:
+   - Use `ComputeStage` or `Sprite/Point` rendering
+   - Index into buffers using `VertexID` or compute thread index
+   - Filter by sector start/count for proper rendering
 
 ## CLI Usage
 
@@ -226,20 +269,6 @@ octreeflow build -i pointcloud.ply -o output -n 2000 -d 0.5 -r 0.5 -v
 octreeflow info -i output.octree
 ```
 
-### Demo Traversal API
-
-```bash
-octreeflow traverse -o output.octree -p pointcloud.ply -d 3 -c 256 -g 128
-```
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-o, --octree` | Input .octree file (required) | - |
-| `-p, --ply` | Input .ply file (required) | - |
-| `-d, --max-depth` | Maximum traversal depth | 3 |
-| `-c, --cache-size` | RAM cache size in MB | 256 |
-| `-g, --gpu-size` | GPU buffer size in MB | 128 |
-
 ## Octree Algorithm
 
 1. **Configuration**: Set points per node (N), starting distance threshold, and level ratio
@@ -270,25 +299,34 @@ octreeflow traverse -o output.octree -p pointcloud.ply -d 3 -c 256 -g 128
 | Node count | int32 |
 | Nodes | Recursive depth-first with point indices |
 
-### `.json` Structure
-
-JSON representation of the octree hierarchy with bounding boxes, point counts, and metadata (without point indices for smaller file size).
-
 ## API Classes
 
 | Class | Description |
 |-------|-------------|
-| `PointCloudLoader` | **Recommended** - main loader with Traverse + CacheAndUpload |
-| `PointCloudBuffers` | Multi-buffer GPU manager (Position, Color, Normal, Scalars) |
-| `PointBufferSector` | Info about a sector (StartIndex, PointCount) |
+| `OctreeFlowReader` | Main reader - Traverse + Cache + Buffer data output |
+| `SectorManager` | Sector allocation with LRU eviction |
+| `CacheManager` | LRU RAM cache for point data |
+| `BufferConfiguration` | Buffer size and offset calculations |
+| `SectorData` | Data for a sector (Vector4[], float[], offsets) |
+| `SectorInfo` | Info about active sector (for rendering) |
+| `BufferUpdateResult` | Result with new sectors and active sectors |
+| `FrameUpdateResult` | Complete frame update result |
 | `TraversalResult` | Result of Traverse() with viewing/caching nodes |
-| `CacheAndUploadResult` | Result with active sectors for rendering |
 | `NodeInfo` | Node metadata for traversal decisions |
 | `TraversalDecision` | Return type from traversal delegate |
-| `CacheManager` | LRU RAM cache for point data |
 
 ## Dependencies
 
-- **Stride.Core.Mathematics** (4.2.0+): Vector3, Color4, BoundingBox types
+- **Stride.Core.Mathematics** (4.2.0+): Vector3, Vector4, Color4, BoundingBox types
 - **System.Text.Json**: JSON serialization
 - **System.CommandLine** (CLI only): Command-line parsing
+
+## Migration from Previous Version
+
+If you were using the old GPU-managed API:
+
+1. Replace `PointCloudLoader` / `PointCloudRenderer` with `OctreeFlowReader`
+2. Remove `GraphicsDevice` from initialization - no longer needed
+3. Create your own `DynamicBufferAdvanced<T>` buffers in vvvv gamma
+4. Use `NewSectors` to upload data with `SetData` and byte offsets
+5. Use `ActiveSectors` for rendering dispatch

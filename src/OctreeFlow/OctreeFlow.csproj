@@ -6,11 +6,13 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Description>Octree-based point cloud processing library for VVVV Gamma</Description>
+    <Description>Octree-based point cloud processing library for VVVV Gamma. Provides traversal, caching, and buffer data output for point clouds.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Stride.Graphics" Version="4.2.0.2122" />
+    <!-- Only need Stride.Core.Mathematics for math types (Vector3, Vector4, Color4, BoundingBox) -->
+    <!-- No longer depends on Stride.Graphics - GPU upload is handled by vvvv gamma directly -->
+    <PackageReference Include="Stride.Core.Mathematics" Version="4.2.0.2122" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
