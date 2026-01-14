@@ -47,8 +47,8 @@ var reader = new OctreeFlowReader(
 // 2. Initialize (once)
 reader.Initialize();
 
-// 3. Each frame: UpdateFrame with your traversal logic
-var result = reader.UpdateFrame(nodeInfo =>
+// 3. Traverse - pass your delegate to get viewing nodes
+var traversal = reader.Traverse(nodeInfo =>
 {
     // Your LOD logic - e.g., based on camera distance
     bool accept = nodeInfo.Level <= targetDepth;
@@ -58,8 +58,13 @@ var result = reader.UpdateFrame(nodeInfo =>
     return new TraversalDecision(accept, display, continueChildren);
 });
 
-// 4. Upload new sectors to your DynamicBufferAdvanced
-foreach (var sector in result.NewSectors)
+// 4. Update buffer with traversal result (no delegate here - just data)
+var bufferResult = reader.UpdateBuffer(traversal.ViewingNodes);
+// Or use UpdateFrame for combined result:
+// var frameResult = reader.UpdateFrame(traversal);
+
+// 5. Upload new sectors to your DynamicBufferAdvanced
+foreach (var sector in bufferResult.NewSectors)
 {
     // Upload to your buffers using byte offset
     positionBuffer.SetData(sector.Positions, sector.ByteOffset);
@@ -68,8 +73,8 @@ foreach (var sector in result.NewSectors)
     intensityBuffer.SetData(sector.Intensities, sector.ByteOffset);
 }
 
-// 5. Render using active sectors
-foreach (var sector in result.ActiveSectors)
+// 6. Render using active sectors
+foreach (var sector in bufferResult.ActiveSectors)
 {
     // sector.StartIndex - first point index in buffers
     // sector.PointCount - number of points to render
@@ -230,7 +235,8 @@ In your vvvv gamma patch:
    - Use `BufferConfig.TotalBytesVector4` and `TotalBytesFloat` for sizes
 
 3. **Update Loop** (per frame):
-   - Call `UpdateFrame()` with your traversal delegate
+   - Call `Traverse()` with your traversal delegate (creates a region in gamma)
+   - Pass the `TraversalResult.ViewingNodes` to `UpdateBuffer()` (just an input, no region)
    - For each `NewSector`: call `SetData` on buffers with `ByteOffset`
    - Use `ActiveSectors` for rendering dispatch
 
@@ -238,6 +244,14 @@ In your vvvv gamma patch:
    - Use `ComputeStage` or `Sprite/Point` rendering
    - Index into buffers using `VertexID` or compute thread index
    - Filter by sector start/count for proper rendering
+
+### Method Overview for Gamma
+
+| Method | Input | Output | Notes |
+|--------|-------|--------|-------|
+| `Traverse(delegate)` | TraversalDelegate | TraversalResult | Creates region in gamma |
+| `UpdateBuffer(nodes)` | IEnumerable<NodeInfo> | BufferUpdateResult | Simple input pin |
+| `UpdateFrame(traversal)` | TraversalResult | FrameUpdateResult | Simple input pin |
 
 ## CLI Usage
 

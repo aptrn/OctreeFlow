@@ -371,23 +371,78 @@ public class OctreeFlowReader : IDisposable
     }
 
     /// <summary>
-    /// Performs a complete frame update: Traverse → Cache → Buffer data output.
-    /// This is the main method to call each frame.
+    /// Updates buffer with the given viewing nodes.
+    /// Loads nodes to cache if needed, then updates sector manager.
+    /// Use this after calling Traverse() separately.
     /// </summary>
-    /// <param name="traversalDelegate">Your traversal logic.</param>
+    /// <param name="viewingNodes">Nodes to display (from TraversalResult.ViewingNodes).</param>
+    /// <returns>Buffer update result with new sectors and active sectors.</returns>
+    public BufferUpdateResult UpdateBuffer(IEnumerable<NodeInfo> viewingNodes)
+    {
+        EnsureInitialized();
+
+        var nodeList = viewingNodes.ToList();
+
+        // Load viewing nodes to cache (sync)
+        var notInCache = nodeList.Where(n => !_cache!.Contains(n.Id)).ToList();
+
+        if (notInCache.Count > 0)
+        {
+            LoadToCache(notInCache);
+        }
+
+        // Update sector manager - get buffer data to upload
+        return _sectorManager!.Update(nodeList);
+    }
+
+    /// <summary>
+    /// Updates buffer with the given viewing nodes asynchronously.
+    /// Loads nodes to cache if needed, then updates sector manager.
+    /// Use this after calling Traverse() separately.
+    /// </summary>
+    /// <param name="viewingNodes">Nodes to display (from TraversalResult.ViewingNodes).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Buffer update result with new sectors and active sectors.</returns>
+    public async Task<BufferUpdateResult> UpdateBufferAsync(
+        IEnumerable<NodeInfo> viewingNodes,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+
+        var nodeList = viewingNodes.ToList();
+
+        // Load viewing nodes to cache (async)
+        var notInCache = nodeList.Where(n => !_cache!.Contains(n.Id)).ToList();
+
+        if (notInCache.Count > 0)
+        {
+            await LoadToCacheAsync(notInCache, cancellationToken);
+        }
+
+        // Update sector manager - get buffer data to upload
+        return _sectorManager!.Update(nodeList);
+    }
+
+    /// <summary>
+    /// Performs a complete frame update: Traverse → Cache → Buffer data output.
+    /// Convenience method that combines Traverse() and UpdateBuffer().
+    /// Note: In vvvv gamma, prefer using Traverse() and UpdateBuffer() separately
+    /// to avoid region-style delegate input.
+    /// </summary>
+    /// <param name="traversalResult">Result from a previous Traverse() call.</param>
     /// <returns>Complete frame result with buffer data to upload.</returns>
-    public FrameUpdateResult UpdateFrame(TraversalDelegate traversalDelegate)
+    public FrameUpdateResult UpdateFrame(TraversalResult traversalResult)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
-        var result = new FrameUpdateResult();
+        var result = new FrameUpdateResult
+        {
+            Traversal = traversalResult
+        };
 
-        // 1. Traverse
-        result.Traversal = Traverse(traversalDelegate);
-
-        // 2. Load viewing nodes to cache (sync)
-        var notInCache = result.Traversal.ViewingNodes
+        // Load viewing nodes to cache (sync)
+        var notInCache = traversalResult.ViewingNodes
             .Where(n => !_cache!.Contains(n.Id))
             .ToList();
 
@@ -400,8 +455,8 @@ public class OctreeFlowReader : IDisposable
             result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache!.Version };
         }
 
-        // 3. Update sector manager - get buffer data to upload
-        result.BufferUpdate = _sectorManager!.Update(result.Traversal.ViewingNodes);
+        // Update sector manager - get buffer data to upload
+        result.BufferUpdate = _sectorManager!.Update(traversalResult.ViewingNodes);
 
         sw.Stop();
         result.TotalTimeMs = sw.ElapsedMilliseconds;
@@ -411,22 +466,24 @@ public class OctreeFlowReader : IDisposable
 
     /// <summary>
     /// Async version of UpdateFrame.
-    /// Cache loading happens async, sector update happens synchronously.
     /// </summary>
+    /// <param name="traversalResult">Result from a previous Traverse() call.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Complete frame result with buffer data to upload.</returns>
     public async Task<FrameUpdateResult> UpdateFrameAsync(
-        TraversalDelegate traversalDelegate,
+        TraversalResult traversalResult,
         CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
-        var result = new FrameUpdateResult();
+        var result = new FrameUpdateResult
+        {
+            Traversal = traversalResult
+        };
 
-        // 1. Traverse
-        result.Traversal = Traverse(traversalDelegate);
-
-        // 2. Load viewing nodes to cache (async)
-        var notInCache = result.Traversal.ViewingNodes
+        // Load viewing nodes to cache (async)
+        var notInCache = traversalResult.ViewingNodes
             .Where(n => !_cache!.Contains(n.Id))
             .ToList();
 
@@ -439,8 +496,8 @@ public class OctreeFlowReader : IDisposable
             result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache!.Version };
         }
 
-        // 3. Update sector manager - get buffer data to upload
-        result.BufferUpdate = _sectorManager!.Update(result.Traversal.ViewingNodes);
+        // Update sector manager - get buffer data to upload
+        result.BufferUpdate = _sectorManager!.Update(traversalResult.ViewingNodes);
 
         sw.Stop();
         result.TotalTimeMs = sw.ElapsedMilliseconds;

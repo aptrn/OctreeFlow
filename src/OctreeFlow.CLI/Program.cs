@@ -657,13 +657,17 @@ class Program
             {
                 int targetDepth = 2 + frame; // Increasing depth each frame
                 
-                var frameResult = reader.UpdateFrame(nodeInfo =>
+                // Step 1: Traverse (separate from buffer update)
+                var traversal = reader.Traverse(nodeInfo =>
                 {
                     bool accept = nodeInfo.Level <= targetDepth;
                     bool display = accept && (nodeInfo.Level == targetDepth || nodeInfo.IsLeaf);
                     bool continueChildren = nodeInfo.Level < targetDepth;
                     return new TraversalDecision(accept, display, continueChildren);
                 });
+
+                // Step 2: Update buffer with traversal result
+                var frameResult = reader.UpdateFrame(traversal);
 
                 Console.WriteLine($"Frame {frame + 1} (depth={targetDepth}):");
                 Console.WriteLine($"  Total time:        {frameResult.TotalTimeMs}ms");
