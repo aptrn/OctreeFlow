@@ -356,13 +356,162 @@ public class OctreeFlowReader : IDisposable
     /// </summary>
     public int MaxDepth => _nodeInfoCache.Values.Max(n => n.Level);
 
+    #region Simple Traversal Methods (No Delegate Required)
+
     /// <summary>
-    /// Traverses the octree using the provided delegate.
-    /// Does NOT load any data - just determines what should be loaded.
+    /// Traverses and selects all nodes at exactly the specified level.
+    /// Easy to use without regions - just pass the level number.
     /// </summary>
-    /// <param name="traversalDelegate">Delegate that decides how to handle each node.</param>
+    /// <param name="targetLevel">The level to select (0 = root, 1 = first children, etc.)</param>
+    /// <returns>Result containing nodes at the target level.</returns>
+    public TraversalResult TraverseToLevel(int targetLevel)
+    {
+        return Traverse(node =>
+        {
+            if (node.Level == targetLevel)
+                return TraversalDecision.DisplayAndStop;
+            else if (node.Level < targetLevel)
+                return TraversalDecision.SkipButContinue;
+            else
+                return TraversalDecision.Reject;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects all nodes from root up to and including the specified level.
+    /// </summary>
+    /// <param name="maxLevel">The maximum level to include (0 = root only, 1 = root + first children, etc.)</param>
+    /// <returns>Result containing nodes up to maxLevel.</returns>
+    public TraversalResult TraverseUpToLevel(int maxLevel)
+    {
+        return Traverse(node =>
+        {
+            if (node.Level <= maxLevel)
+            {
+                bool continueDeeper = node.Level < maxLevel && !node.IsLeaf;
+                return new TraversalDecision(true, true, continueDeeper);
+            }
+            return TraversalDecision.Reject;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes until reaching approximately the target point count.
+    /// Prioritizes coarser levels (lower detail) first.
+    /// </summary>
+    /// <param name="targetPointCount">Approximate maximum number of points to select.</param>
+    /// <returns>Result containing nodes up to the point budget.</returns>
+    public TraversalResult TraverseByPointBudget(int targetPointCount)
+    {
+        int currentPoints = 0;
+        
+        return Traverse(node =>
+        {
+            if (currentPoints >= targetPointCount)
+                return TraversalDecision.Reject;
+
+            currentPoints += node.PointCount;
+            
+            bool continueDeeper = currentPoints < targetPointCount && !node.IsLeaf;
+            return new TraversalDecision(true, true, continueDeeper);
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects all leaf nodes (nodes with no children).
+    /// This gives the highest detail available.
+    /// </summary>
+    /// <returns>Result containing all leaf nodes.</returns>
+    public TraversalResult TraverseLeaves()
+    {
+        return Traverse(node =>
+        {
+            if (node.IsLeaf)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.SkipButContinue;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes that intersect with the given bounding box.
+    /// Only includes nodes whose bounds overlap with the view bounds.
+    /// </summary>
+    /// <param name="viewBounds">The bounding box to test intersection with.</param>
+    /// <param name="maxLevel">Maximum level to traverse to (-1 for unlimited).</param>
+    /// <returns>Result containing nodes that intersect the view bounds.</returns>
+    public TraversalResult TraverseByBounds(BoundingBox viewBounds, int maxLevel = -1)
+    {
+        return Traverse(node =>
+        {
+            // Check if node intersects view bounds
+            bool intersects = node.BoundingBox.Intersects(ref viewBounds);
+            
+            if (!intersects)
+                return TraversalDecision.Reject;
+
+            // Check level limit
+            if (maxLevel >= 0 && node.Level >= maxLevel)
+                return TraversalDecision.DisplayAndStop;
+
+            // Node intersects - include it and continue to children
+            if (node.IsLeaf)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.DisplayAndContinue;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes based on distance from a camera position.
+    /// Closer nodes get more detail (deeper levels), farther nodes get less detail.
+    /// </summary>
+    /// <param name="cameraPosition">The camera/viewer position.</param>
+    /// <param name="detailBias">Higher values = more detail. Default 1.0. Range: 0.1 to 10.0</param>
+    /// <param name="maxPoints">Maximum points to select (0 = unlimited).</param>
+    /// <returns>Result containing nodes selected by distance-based LOD.</returns>
+    public TraversalResult TraverseByDistance(Vector3 cameraPosition, float detailBias = 1.0f, int maxPoints = 0)
+    {
+        int currentPoints = 0;
+        
+        return Traverse(node =>
+        {
+            // Check point budget
+            if (maxPoints > 0 && currentPoints >= maxPoints)
+                return TraversalDecision.Reject;
+
+            // Calculate distance from camera to node center
+            float distance = Vector3.Distance(cameraPosition, node.Center);
+            
+            // Calculate node size (use largest dimension)
+            float nodeSize = Math.Max(Math.Max(node.Size.X, node.Size.Y), node.Size.Z);
+            
+            // Screen-space size heuristic: larger nodes or closer nodes should subdivide
+            // screenSize approximates how big the node appears on screen
+            float screenSize = (nodeSize / Math.Max(distance, 0.001f)) * detailBias;
+            
+            // Threshold for subdivision (tune this value)
+            float subdivideThreshold = 0.1f;
+            
+            currentPoints += node.PointCount;
+
+            if (node.IsLeaf || screenSize < subdivideThreshold)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.DisplayAndContinue;
+        });
+    }
+
+    #endregion
+
+    /// <summary>
+    /// Traverses the octree using the provided function.
+    /// This appears as a regular node input in vvvv gamma (not a region).
+    /// Pass a Func&lt;NodeInfo, TraversalDecision&gt; that decides how to handle each node.
+    /// </summary>
+    /// <param name="traversalFunction">Function that takes NodeInfo and returns TraversalDecision.</param>
     /// <returns>Result containing caching and viewing node lists.</returns>
-    public TraversalResult Traverse(TraversalDelegate traversalDelegate)
+    public TraversalResult Traverse(Func<NodeInfo, TraversalDecision> traversalFunction)
     {
         EnsureInitialized();
 
@@ -379,7 +528,7 @@ public class OctreeFlowReader : IDisposable
             return result;
         }
 
-        TraverseNode(_root, traversalDelegate, result);
+        TraverseNode(_root, traversalFunction, result);
 
         sw.Stop();
         result.TraversalTimeMs = sw.ElapsedMilliseconds;
@@ -388,7 +537,7 @@ public class OctreeFlowReader : IDisposable
         return result;
     }
 
-    private void TraverseNode(OctreeNode node, TraversalDelegate del, TraversalResult result)
+    private void TraverseNode(OctreeNode node, Func<NodeInfo, TraversalDecision> func, TraversalResult result)
     {
         result.NodesVisited++;
 
@@ -406,8 +555,8 @@ public class OctreeFlowReader : IDisposable
             _sectorManager?.GetSectorFor(node.Id) ?? -1
         );
 
-        // Call delegate
-        var decision = del(nodeInfo);
+        // Call function
+        var decision = func(nodeInfo);
 
         if (decision.IsAccepted)
         {
@@ -425,7 +574,7 @@ public class OctreeFlowReader : IDisposable
         {
             foreach (var child in node.Children)
             {
-                TraverseNode(child, del, result);
+                TraverseNode(child, func, result);
             }
         }
     }
