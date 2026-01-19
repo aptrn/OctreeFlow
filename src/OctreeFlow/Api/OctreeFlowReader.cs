@@ -37,6 +37,14 @@ public class OctreeFlowReader : IDisposable
 
     private int _traversalVersion;
     private bool _isInitialized;
+    
+    // Cached traversal result - return same object if content unchanged
+    private TraversalResult? _cachedTraversalResult;
+    private HashSet<string> _lastViewingNodeIds = new();
+    
+    // Cached frame update result - return same object if buffer state unchanged
+    private FrameUpdateResult? _cachedFrameUpdateResult;
+    private int _lastBufferVersion;
 
     #region Public Properties
 
@@ -508,24 +516,25 @@ public class OctreeFlowReader : IDisposable
     /// Traverses the octree using the provided function.
     /// This appears as a regular node input in vvvv gamma (not a region).
     /// Pass a Func&lt;NodeInfo, TraversalDecision&gt; that decides how to handle each node.
+    /// 
+    /// IMPORTANT: Returns the SAME TraversalResult object if the viewing nodes haven't changed.
+    /// This prevents unnecessary downstream updates in vvvv gamma.
     /// </summary>
     /// <param name="traversalFunction">Function that takes NodeInfo and returns TraversalDecision.</param>
-    /// <returns>Result containing caching and viewing node lists.</returns>
+    /// <returns>Result containing caching and viewing node lists. Same object if unchanged.</returns>
     public TraversalResult Traverse(Func<NodeInfo, TraversalDecision> traversalFunction)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
-        var result = new TraversalResult
-        {
-            Version = Interlocked.Increment(ref _traversalVersion)
-        };
+        var result = new TraversalResult();
 
         if (_root == null)
         {
             result.IsComplete = true;
             result.TraversalTimeMs = sw.ElapsedMilliseconds;
-            return result;
+            result.Version = _traversalVersion;
+            return _cachedTraversalResult ?? result;
         }
 
         TraverseNode(_root, traversalFunction, result);
@@ -533,6 +542,20 @@ public class OctreeFlowReader : IDisposable
         sw.Stop();
         result.TraversalTimeMs = sw.ElapsedMilliseconds;
         result.IsComplete = true;
+
+        // Check if viewing nodes changed
+        var currentNodeIds = new HashSet<string>(result.ViewingNodes.Select(n => n.Id));
+        
+        if (_cachedTraversalResult != null && currentNodeIds.SetEquals(_lastViewingNodeIds))
+        {
+            // Content unchanged - return the SAME object (no "Changed" trigger in vvvv)
+            return _cachedTraversalResult;
+        }
+
+        // Content changed - increment version and cache new result
+        result.Version = Interlocked.Increment(ref _traversalVersion);
+        _lastViewingNodeIds = currentNodeIds;
+        _cachedTraversalResult = result;
 
         return result;
     }
@@ -724,11 +747,12 @@ public class OctreeFlowReader : IDisposable
     /// <summary>
     /// Performs a complete frame update: Traverse → Cache → Buffer data output.
     /// Convenience method that combines Traverse() and UpdateBuffer().
-    /// Note: In vvvv gamma, prefer using Traverse() and UpdateBuffer() separately
-    /// to avoid region-style delegate input.
+    /// 
+    /// IMPORTANT: Returns the SAME FrameUpdateResult object if nothing changed.
+    /// This prevents unnecessary downstream updates in vvvv gamma.
     /// </summary>
     /// <param name="traversalResult">Result from a previous Traverse() call.</param>
-    /// <returns>Complete frame result with buffer data to upload.</returns>
+    /// <returns>Complete frame result with buffer data to upload. Same object if unchanged.</returns>
     public FrameUpdateResult UpdateFrame(TraversalResult traversalResult)
     {
         EnsureInitialized();
@@ -758,6 +782,21 @@ public class OctreeFlowReader : IDisposable
 
         sw.Stop();
         result.TotalTimeMs = sw.ElapsedMilliseconds;
+
+        // Check if buffer state changed
+        int currentBufferVersion = result.BufferUpdate.Version;
+        
+        if (_cachedFrameUpdateResult != null && 
+            currentBufferVersion == _lastBufferVersion && 
+            !result.BufferUpdate.HasNewData)
+        {
+            // Buffer state unchanged - return the SAME object (no "Changed" trigger in vvvv)
+            return _cachedFrameUpdateResult;
+        }
+
+        // Buffer state changed - cache new result
+        _lastBufferVersion = currentBufferVersion;
+        _cachedFrameUpdateResult = result;
 
         return result;
     }
