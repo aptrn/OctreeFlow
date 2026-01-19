@@ -37,10 +37,22 @@ public class SectorData
     public int ByteOffsetVector4 { get; set; }
 
     /// <summary>
+    /// Element offset in the buffer for Vector4 features.
+    /// Use this if SetData expects element index instead of byte offset.
+    /// </summary>
+    public int ElementOffsetVector4 => ByteOffsetVector4 / 16;
+
+    /// <summary>
     /// Byte offset in the buffer for Float32 features.
     /// Use this with DynamicBufferAdvanced SetData offset for float buffers.
     /// </summary>
     public int ByteOffsetFloat32 { get; set; }
+
+    /// <summary>
+    /// Element offset in the buffer for Float32 features.
+    /// Use this if SetData expects element index instead of byte offset.
+    /// </summary>
+    public int ElementOffsetFloat32 => ByteOffsetFloat32 / 4;
 
     // Direct feature arrays (null if not available in source)
     /// <summary>
@@ -220,6 +232,58 @@ public struct SectorInfo
 }
 
 /// <summary>
+/// Combined buffer data for uploading all sectors at once (at offset 0).
+/// Use this if your buffer implementation doesn't support non-zero offsets.
+/// </summary>
+public class CombinedBufferData
+{
+    /// <summary>
+    /// Combined position data from all sectors (contiguous at offset 0).
+    /// </summary>
+    public Vector4[]? PositionData { get; set; }
+
+    /// <summary>
+    /// Combined color data from all sectors (contiguous at offset 0).
+    /// </summary>
+    public Vector4[]? ColorsData { get; set; }
+
+    /// <summary>
+    /// Combined normal data from all sectors (contiguous at offset 0).
+    /// </summary>
+    public Vector4[]? NormalsData { get; set; }
+
+    /// <summary>
+    /// Combined intensity data from all sectors (contiguous at offset 0).
+    /// </summary>
+    public float[]? IntensityData { get; set; }
+
+    /// <summary>
+    /// Total number of points across all sectors.
+    /// </summary>
+    public int TotalPointCount { get; set; }
+
+    /// <summary>
+    /// Whether there is position data.
+    /// </summary>
+    public bool HasPosition => PositionData != null && TotalPointCount > 0;
+
+    /// <summary>
+    /// Whether there is color data.
+    /// </summary>
+    public bool HasColors => ColorsData != null && TotalPointCount > 0;
+
+    /// <summary>
+    /// Whether there is normal data.
+    /// </summary>
+    public bool HasNormals => NormalsData != null && TotalPointCount > 0;
+
+    /// <summary>
+    /// Whether there is intensity data.
+    /// </summary>
+    public bool HasIntensity => IntensityData != null && TotalPointCount > 0;
+}
+
+/// <summary>
 /// Result of a buffer manager update.
 /// Contains new data to upload and current sector states.
 /// </summary>
@@ -285,6 +349,67 @@ public class BufferUpdateResult
     /// True if there are new sectors to upload.
     /// </summary>
     public bool HasNewData => NewSectors.Count > 0;
+
+    /// <summary>
+    /// Gets combined buffer data from all NEW sectors, for uploading at offset 0.
+    /// Use this if DynamicBufferAdvanced doesn't support non-zero offsets.
+    /// Call this only when HasNewData is true.
+    /// </summary>
+    public CombinedBufferData GetCombinedNewData()
+    {
+        return CombineAllSectorData(NewSectors);
+    }
+
+    /// <summary>
+    /// Combines data from multiple sectors into contiguous arrays.
+    /// </summary>
+    private static CombinedBufferData CombineAllSectorData(List<SectorData> sectors)
+    {
+        var result = new CombinedBufferData();
+        
+        if (sectors.Count == 0) return result;
+
+        // Calculate total points
+        int totalPoints = sectors.Sum(s => s.PointCount);
+        result.TotalPointCount = totalPoints;
+
+        if (totalPoints == 0) return result;
+
+        // Check what data is available
+        bool hasPosition = sectors.Any(s => s.HasPosition);
+        bool hasColors = sectors.Any(s => s.HasColors);
+        bool hasNormals = sectors.Any(s => s.HasNormals);
+        bool hasIntensity = sectors.Any(s => s.HasIntensity);
+
+        // Allocate combined arrays
+        if (hasPosition) result.PositionData = new Vector4[totalPoints];
+        if (hasColors) result.ColorsData = new Vector4[totalPoints];
+        if (hasNormals) result.NormalsData = new Vector4[totalPoints];
+        if (hasIntensity) result.IntensityData = new float[totalPoints];
+
+        // Copy data from each sector
+        int offset = 0;
+        foreach (var sector in sectors)
+        {
+            int count = sector.PointCount;
+
+            if (hasPosition && sector.PositionData != null)
+                Array.Copy(sector.PositionData, 0, result.PositionData!, offset, count);
+
+            if (hasColors && sector.ColorsData != null)
+                Array.Copy(sector.ColorsData, 0, result.ColorsData!, offset, count);
+
+            if (hasNormals && sector.NormalsData != null)
+                Array.Copy(sector.NormalsData, 0, result.NormalsData!, offset, count);
+
+            if (hasIntensity && sector.IntensityData != null)
+                Array.Copy(sector.IntensityData, 0, result.IntensityData!, offset, count);
+
+            offset += count;
+        }
+
+        return result;
+    }
 }
 
 /// <summary>
@@ -320,12 +445,12 @@ public class BufferConfiguration
     /// <summary>
     /// Total size in bytes for a Vector4 buffer.
     /// </summary>
-    public int TotalBytesVector4 => TotalCapacity * BytesPerVector4;
+    public long TotalBytesVector4 => (long)TotalCapacity * BytesPerVector4;
 
     /// <summary>
     /// Total size in bytes for a float buffer.
     /// </summary>
-    public int TotalBytesFloat => TotalCapacity * BytesPerFloat;
+    public long TotalBytesFloat => (long)TotalCapacity * BytesPerFloat;
 
     /// <summary>
     /// Byte offset for a given sector in Vector4 buffers.

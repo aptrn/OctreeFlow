@@ -104,13 +104,13 @@ public class OctreeFlowReader : IDisposable
     /// Total buffer size in bytes for Vector4 buffers.
     /// Use this to create your DynamicBufferAdvanced&lt;Vector4&gt; with the correct size.
     /// </summary>
-    public int BufferSizeBytesVector4 => BufferConfig?.TotalBytesVector4 ?? 0;
+    public long BufferSizeBytesVector4 => BufferConfig?.TotalBytesVector4 ?? 0;
 
     /// <summary>
     /// Total buffer size in bytes for Float32 buffers.
     /// Use this to create your DynamicBufferAdvanced&lt;float&gt; with the correct size.
     /// </summary>
-    public int BufferSizeBytesFloat32 => BufferConfig?.TotalBytesFloat ?? 0;
+    public long BufferSizeBytesFloat32 => BufferConfig?.TotalBytesFloat ?? 0;
 
     /// <summary>
     /// Available properties from the PLY file.
@@ -316,6 +316,45 @@ public class OctreeFlowReader : IDisposable
     {
         return _nodeInfoCache.TryGetValue(nodeId, out var info) ? info : null;
     }
+
+    /// <summary>
+    /// Gets statistics about the octree structure per level.
+    /// Useful for debugging to see how points are distributed.
+    /// </summary>
+    /// <returns>Dictionary where key is level and value is (nodeCount, totalPoints).</returns>
+    public Dictionary<int, (int NodeCount, int TotalPoints)> GetLevelStats()
+    {
+        EnsureInitialized();
+        
+        var stats = new Dictionary<int, (int NodeCount, int TotalPoints)>();
+        
+        foreach (var nodeInfo in _nodeInfoCache.Values)
+        {
+            if (!stats.ContainsKey(nodeInfo.Level))
+            {
+                stats[nodeInfo.Level] = (0, 0);
+            }
+            
+            var current = stats[nodeInfo.Level];
+            stats[nodeInfo.Level] = (current.NodeCount + 1, current.TotalPoints + nodeInfo.PointCount);
+        }
+        
+        return stats;
+    }
+
+    /// <summary>
+    /// Gets all NodeInfo objects at a specific level.
+    /// </summary>
+    public IEnumerable<NodeInfo> GetNodesAtLevel(int level)
+    {
+        EnsureInitialized();
+        return _nodeInfoCache.Values.Where(n => n.Level == level);
+    }
+
+    /// <summary>
+    /// Gets the maximum depth of the octree.
+    /// </summary>
+    public int MaxDepth => _nodeInfoCache.Values.Max(n => n.Level);
 
     /// <summary>
     /// Traverses the octree using the provided delegate.

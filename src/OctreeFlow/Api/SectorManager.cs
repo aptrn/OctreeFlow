@@ -230,6 +230,16 @@ public class SectorManager : IDisposable
             return null;
         }
 
+        // Truncate if node has more points than sector can hold
+        int pointCount = Math.Min(pointData.Length, _config.MaxPointsPerSector);
+        if (pointData.Length > _config.MaxPointsPerSector)
+        {
+            // Create truncated copy
+            var truncated = new PointData[pointCount];
+            Array.Copy(pointData, truncated, pointCount);
+            pointData = truncated;
+        }
+
         // Find or make a sector
         int sectorIndex = FindEmptySector();
         if (sectorIndex < 0)
@@ -248,7 +258,7 @@ public class SectorManager : IDisposable
         var sector = _sectors[sectorIndex];
         sector.IsActive = true;
         sector.NodeId = node.Id;
-        sector.PointCount = pointData.Length;
+        sector.PointCount = pointCount;
         sector.Level = node.Level;
         sector.FrameLoaded = _frameVersion;
 
