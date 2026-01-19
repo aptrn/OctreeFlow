@@ -23,7 +23,7 @@ public class OctreeFlowReader : IDisposable
     private readonly string _octreePath;
     private readonly string _plyPath;
     private readonly int _cacheSizeMB;
-    private readonly int _bufferSizeMB;
+    private readonly long _bufferSizeBytes;
     private readonly int _maxPointsPerSector;
 
     private CacheManager? _cache;
@@ -32,6 +32,8 @@ public class OctreeFlowReader : IDisposable
     private OctreeFileInfo? _fileInfo;
     private PlyIndex? _plyIndex;
     private readonly Dictionary<string, NodeInfo> _nodeInfoCache = new();
+    private Dictionary<string, Vector4[]>? _featuresVector4;
+    private Dictionary<string, float[]>? _featuresFloat32;
 
     private int _traversalVersion;
     private bool _isInitialized;
@@ -99,9 +101,39 @@ public class OctreeFlowReader : IDisposable
     public int BufferCapacity => BufferConfig?.TotalCapacity ?? 0;
 
     /// <summary>
+    /// Total buffer size in bytes for Vector4 buffers.
+    /// Use this to create your DynamicBufferAdvanced&lt;Vector4&gt; with the correct size.
+    /// </summary>
+    public int BufferSizeBytesVector4 => BufferConfig?.TotalBytesVector4 ?? 0;
+
+    /// <summary>
+    /// Total buffer size in bytes for Float32 buffers.
+    /// Use this to create your DynamicBufferAdvanced&lt;float&gt; with the correct size.
+    /// </summary>
+    public int BufferSizeBytesFloat32 => BufferConfig?.TotalBytesFloat ?? 0;
+
+    /// <summary>
     /// Available properties from the PLY file.
     /// </summary>
     public IReadOnlyList<PlyProperty> PlyProperties => _plyIndex?.Properties ?? Array.Empty<PlyProperty>().ToList();
+
+    /// <summary>
+    /// Sequence of Vector4 feature names mapped to typed arrays for buffer initialization.
+    /// Keys: "Position", "Colors", "Normals".
+    /// Values: Vector4[] arrays sized to buffer capacity.
+    /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, Vector4[]>> FeaturesVector4 => 
+        _featuresVector4 ?? Enumerable.Empty<KeyValuePair<string, Vector4[]>>();
+
+    /// <summary>
+    /// Sequence of Float32 feature names mapped to typed arrays for buffer initialization.
+    /// Keys: "Intensity" and any scalar dimension names.
+    /// Values: float[] arrays sized to buffer capacity.
+    /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, float[]>> FeaturesFloat32 => 
+        _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>();
 
     #endregion
 
@@ -111,19 +143,19 @@ public class OctreeFlowReader : IDisposable
     /// <param name="octreePath">Path to the .octree file.</param>
     /// <param name="plyPath">Path to the .ply file.</param>
     /// <param name="cacheSizeMB">RAM cache size in megabytes.</param>
-    /// <param name="bufferSizeMB">Buffer size in megabytes (for sector calculation).</param>
+    /// <param name="bufferSizeBytes">Buffer size in bytes (for sector calculation).</param>
     /// <param name="maxPointsPerSector">Maximum points per sector.</param>
     public OctreeFlowReader(
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int bufferSizeMB = 256,
+        long bufferSizeBytes = 268435456, // 256 MB default
         int maxPointsPerSector = 65536)
     {
         _octreePath = octreePath;
         _plyPath = plyPath;
         _cacheSizeMB = cacheSizeMB;
-        _bufferSizeMB = bufferSizeMB;
+        _bufferSizeBytes = bufferSizeBytes;
         _maxPointsPerSector = maxPointsPerSector;
     }
 
@@ -134,10 +166,10 @@ public class OctreeFlowReader : IDisposable
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int bufferSizeMB = 256,
+        long bufferSizeBytes = 268435456, // 256 MB default
         int maxPointsPerSector = 65536)
     {
-        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, bufferSizeMB, maxPointsPerSector);
+        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, bufferSizeBytes, maxPointsPerSector);
         reader.Initialize();
         return reader;
     }
@@ -166,11 +198,89 @@ public class OctreeFlowReader : IDisposable
         // Create RAM cache
         _cache = new CacheManager(_cacheSizeMB);
 
-        // Create sector manager
-        var config = BufferConfiguration.FromBufferSize(_bufferSizeMB, _maxPointsPerSector);
+        // Create sector manager (need this before BuildFeatureInfo for buffer capacity)
+        var config = BufferConfiguration.FromBufferSize(_bufferSizeBytes, _maxPointsPerSector);
         _sectorManager = new SectorManager(_cache, config);
 
+        // Build feature info dictionaries with correctly sized arrays
+        BuildFeatureInfo(config.TotalCapacity);
+
+        // Tell SectorManager which features are available (so it only creates matching data)
+        _sectorManager.SetAvailableFeatures(
+            _featuresVector4?.Keys ?? Enumerable.Empty<string>(),
+            _featuresFloat32?.Keys ?? Enumerable.Empty<string>());
+
         _isInitialized = true;
+    }
+
+    /// <summary>
+    /// Builds the feature info dictionaries from PLY properties.
+    /// Populates FeaturesVector4 and FeaturesFloat32 with correctly-sized arrays for buffer initialization.
+    /// </summary>
+    /// <param name="bufferCapacity">Total buffer capacity in points (used to size the arrays).</param>
+    private void BuildFeatureInfo(int bufferCapacity)
+    {
+        _featuresVector4 = new Dictionary<string, Vector4[]>();
+        _featuresFloat32 = new Dictionary<string, float[]>();
+
+        if (_plyIndex == null) return;
+
+        // Standard Vector4 features (always present if PLY has x,y,z)
+        bool hasPosition = false;
+        bool hasColors = false;
+        bool hasNormals = false;
+        bool hasIntensity = false;
+
+        foreach (var prop in _plyIndex.Properties)
+        {
+            var name = prop.Name.ToLower();
+
+            // Check for position components
+            if (name == "x" || name == "y" || name == "z")
+            {
+                hasPosition = true;
+            }
+            // Check for color components
+            else if (name == "red" || name == "r" || name == "green" || name == "g" || 
+                     name == "blue" || name == "b" || name == "alpha" || name == "a")
+            {
+                hasColors = true;
+            }
+            // Check for normal components
+            else if (name == "nx" || name == "ny" || name == "nz")
+            {
+                hasNormals = true;
+            }
+            // Check for intensity
+            else if (name == "intensity" || name == "scalar_intensity")
+            {
+                hasIntensity = true;
+            }
+            // Everything else is a scalar
+            else
+            {
+                // Add as scalar feature with correctly-sized float array
+                _featuresFloat32[prop.Name] = new float[bufferCapacity];
+            }
+        }
+
+        // Add standard features based on what was found (with correctly-sized arrays)
+        if (hasPosition)
+        {
+            _featuresVector4["Position"] = new Vector4[bufferCapacity];
+        }
+        if (hasColors)
+        {
+            _featuresVector4["Colors"] = new Vector4[bufferCapacity];
+        }
+        if (hasNormals)
+        {
+            _featuresVector4["Normals"] = new Vector4[bufferCapacity];
+        }
+        if (hasIntensity)
+        {
+            _featuresFloat32["Intensity"] = new float[bufferCapacity];
+        }
     }
 
     /// <summary>
@@ -629,9 +739,10 @@ public class FrameUpdateResult
 
     /// <summary>
     /// Quick access to new sector data to upload.
+    /// Mutable list of sectors, each containing a Features dictionary.
     /// Upload these to your DynamicBufferAdvanced buffers.
     /// </summary>
-    public SectorData[] NewSectors => BufferUpdate.NewSectors;
+    public List<SectorData> NewSectors => BufferUpdate.NewSectors;
 
     /// <summary>
     /// Quick access to active sectors for rendering.

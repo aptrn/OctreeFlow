@@ -24,10 +24,17 @@ public class SectorManager : IDisposable
     private readonly Dictionary<string, int> _nodeToSector = new();
     private readonly LinkedList<string> _lruList = new();
     private readonly object _lock = new();
+    
+    // Mutable output list for NewSectors
+    private readonly List<SectorData> _newSectorsList = new();
 
     // Change tracking
     private readonly List<SectorData> _pendingUploads = new();
     private readonly List<int> _releasedSectors = new();
+
+    // Available features (determined from PLY file)
+    private readonly HashSet<string> _availableVector4Features = new();
+    private readonly HashSet<string> _availableFloat32Features = new();
 
     private int _version;
     private int _frameVersion;
@@ -96,8 +103,8 @@ public class SectorManager : IDisposable
             _sectors[i] = new Sector
             {
                 Index = i,
-                ByteOffsetVector4 = config.GetByteOffsetVector4(i),
-                ByteOffsetFloat = config.GetByteOffsetFloat(i),
+                ByteOffsetVector4 = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerVector4,
+                ByteOffsetFloat = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerFloat,
                 IsActive = false
             };
         }
@@ -107,11 +114,29 @@ public class SectorManager : IDisposable
     /// Creates a sector manager with default configuration.
     /// </summary>
     /// <param name="cache">RAM cache to read point data from.</param>
-    /// <param name="bufferSizeMB">Buffer size in MB.</param>
+    /// <param name="bufferSizeBytes">Buffer size in bytes.</param>
     /// <param name="maxPointsPerSector">Maximum points per sector.</param>
-    public SectorManager(CacheManager cache, int bufferSizeMB, int maxPointsPerSector = 65536)
-        : this(cache, BufferConfiguration.FromBufferSize(bufferSizeMB, maxPointsPerSector))
+    public SectorManager(CacheManager cache, long bufferSizeBytes, int maxPointsPerSector = 65536)
+        : this(cache, BufferConfiguration.FromBufferSize(bufferSizeBytes, maxPointsPerSector))
     {
+    }
+
+    /// <summary>
+    /// Sets the available features based on what's in the PLY file.
+    /// Call this after initialization with the feature names from OctreeFlowReader.
+    /// </summary>
+    /// <param name="vector4Features">Names of available Vector4 features (e.g., "Position", "Colors", "Normals").</param>
+    /// <param name="float32Features">Names of available Float32 features (e.g., "Intensity", scalar names).</param>
+    public void SetAvailableFeatures(IEnumerable<string> vector4Features, IEnumerable<string> float32Features)
+    {
+        _availableVector4Features.Clear();
+        _availableFloat32Features.Clear();
+        
+        foreach (var f in vector4Features)
+            _availableVector4Features.Add(f);
+        
+        foreach (var f in float32Features)
+            _availableFloat32Features.Add(f);
     }
 
     /// <summary>
@@ -130,6 +155,7 @@ public class SectorManager : IDisposable
         {
             _pendingUploads.Clear();
             _releasedSectors.Clear();
+            _newSectorsList.Clear();
             _frameVersion++;
 
             var desiredSet = new HashSet<string>();
@@ -168,6 +194,7 @@ public class SectorManager : IDisposable
                     if (sectorData != null)
                     {
                         _pendingUploads.Add(sectorData);
+                        _newSectorsList.Add(sectorData);
                         result.NodesLoaded++;
                     }
                     else
@@ -177,7 +204,7 @@ public class SectorManager : IDisposable
                 }
             }
 
-            result.NewSectors = _pendingUploads.ToArray();
+            result.NewSectors = _newSectorsList;
             result.ReleasedSectors = _releasedSectors.ToArray();
             result.ActiveSectors = GetActiveSectorsInternal();
             result.Version = _version;
@@ -233,9 +260,12 @@ public class SectorManager : IDisposable
         return SectorData.FromPointData(
             sectorIndex,
             sector.ByteOffsetVector4,
+            sector.ByteOffsetFloat,
             node.Id,
             node.Level,
-            pointData);
+            pointData,
+            _availableVector4Features,
+            _availableFloat32Features);
     }
 
     private int FindEmptySector()

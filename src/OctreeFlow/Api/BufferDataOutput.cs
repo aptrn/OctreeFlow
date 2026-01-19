@@ -5,8 +5,8 @@ namespace OctreeFlow.Api;
 
 /// <summary>
 /// Data for a single sector ready to be uploaded to vvvv gamma buffers.
-/// Contains Vector4 arrays for positions, colors, normals, and float arrays for scalars.
-/// Use ByteOffset to know where to write in the DynamicBufferAdvanced.
+/// Contains two dictionaries: one for Vector4 features and one for Float32 features.
+/// Each dictionary maps feature names to their data arrays.
 /// </summary>
 public class SectorData
 {
@@ -14,12 +14,6 @@ public class SectorData
     /// Index of this sector in the buffer.
     /// </summary>
     public int SectorIndex { get; set; }
-
-    /// <summary>
-    /// Byte offset in the buffer where this sector starts.
-    /// Use this with DynamicBufferAdvanced SetData offset.
-    /// </summary>
-    public int ByteOffset { get; set; }
 
     /// <summary>
     /// Node ID this sector contains.
@@ -37,85 +31,145 @@ public class SectorData
     public int Level { get; set; }
 
     /// <summary>
-    /// Position data as Vector4 (xyz + w padding).
-    /// Ready for MutableArray&lt;Vector4&gt; in vvvv gamma.
+    /// Byte offset in the buffer for Vector4 features.
+    /// Use this with DynamicBufferAdvanced SetData offset for Vector4 buffers.
     /// </summary>
-    public Vector4[] Positions { get; set; } = Array.Empty<Vector4>();
+    public int ByteOffsetVector4 { get; set; }
 
     /// <summary>
-    /// Color data as Vector4 (rgba).
-    /// Ready for MutableArray&lt;Vector4&gt; in vvvv gamma.
+    /// Byte offset in the buffer for Float32 features.
+    /// Use this with DynamicBufferAdvanced SetData offset for float buffers.
     /// </summary>
-    public Vector4[] Colors { get; set; } = Array.Empty<Vector4>();
+    public int ByteOffsetFloat32 { get; set; }
+
+    // Direct feature arrays (null if not available in source)
+    /// <summary>
+    /// Position data as Vector4 array. Null if not available.
+    /// </summary>
+    public Vector4[]? PositionData { get; set; }
 
     /// <summary>
-    /// Normal data as Vector4 (xyz + w padding).
-    /// Ready for MutableArray&lt;Vector4&gt; in vvvv gamma.
+    /// Color data as Vector4 array. Null if not available.
     /// </summary>
-    public Vector4[] Normals { get; set; } = Array.Empty<Vector4>();
+    public Vector4[]? ColorsData { get; set; }
 
     /// <summary>
-    /// Intensity values as float array.
-    /// Ready for MutableArray&lt;Float32&gt; in vvvv gamma.
+    /// Normal data as Vector4 array. Null if not available.
     /// </summary>
-    public float[] Intensities { get; set; } = Array.Empty<float>();
+    public Vector4[]? NormalsData { get; set; }
 
     /// <summary>
-    /// Additional scalar properties (e.g., classification, etc.).
-    /// Key is property name, value is float array.
+    /// Intensity data as float array. Null if not available.
     /// </summary>
-    public Dictionary<string, float[]> Scalars { get; set; } = new();
+    public float[]? IntensityData { get; set; }
+
+    /// <summary>
+    /// Whether this sector has position data.
+    /// </summary>
+    public bool HasPosition => PositionData != null;
+
+    /// <summary>
+    /// Whether this sector has color data.
+    /// </summary>
+    public bool HasColors => ColorsData != null;
+
+    /// <summary>
+    /// Whether this sector has normal data.
+    /// </summary>
+    public bool HasNormals => NormalsData != null;
+
+    /// <summary>
+    /// Whether this sector has intensity data.
+    /// </summary>
+    public bool HasIntensity => IntensityData != null;
+
+    // Internal storage for additional scalar features
+    private Dictionary<string, float[]> _scalarFeatures = new();
+
+    /// <summary>
+    /// Additional scalar feature data as sequence of key-value pairs.
+    /// Keys are scalar property names from the PLY file.
+    /// Values: float[] arrays ready for upload to GPU buffers.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
 
     /// <summary>
     /// Creates SectorData from PointData array.
     /// </summary>
-    public static SectorData FromPointData(int sectorIndex, int byteOffset, string nodeId, int level, PointData[] points)
+    /// <param name="sectorIndex">Index of the sector.</param>
+    /// <param name="byteOffsetVector4">Byte offset for Vector4 data.</param>
+    /// <param name="byteOffsetFloat">Byte offset for float data.</param>
+    /// <param name="nodeId">Node ID.</param>
+    /// <param name="level">Octree level.</param>
+    /// <param name="points">Point data array.</param>
+    /// <param name="availableVector4Features">Set of Vector4 feature names that should be included (e.g., "Position", "Colors", "Normals"). Only features in this set will be added.</param>
+    /// <param name="availableFloat32Features">Set of Float32 feature names that should be included (e.g., "Intensity", scalar names). Only features in this set will be added.</param>
+    public static SectorData FromPointData(
+        int sectorIndex, 
+        int byteOffsetVector4, 
+        int byteOffsetFloat, 
+        string nodeId, 
+        int level, 
+        PointData[] points,
+        ISet<string> availableVector4Features,
+        ISet<string> availableFloat32Features)
     {
         var result = new SectorData
         {
             SectorIndex = sectorIndex,
-            ByteOffset = byteOffset,
             NodeId = nodeId,
             Level = level,
             PointCount = points.Length,
-            Positions = new Vector4[points.Length],
-            Colors = new Vector4[points.Length],
-            Normals = new Vector4[points.Length],
-            Intensities = new float[points.Length]
+            ByteOffsetVector4 = byteOffsetVector4,
+            ByteOffsetFloat32 = byteOffsetFloat
         };
 
-        // Collect scalar property names
-        var scalarNames = new HashSet<string>();
-        foreach (var pt in points)
-        {
-            if (pt.Scalars != null)
-            {
-                foreach (var key in pt.Scalars.Keys)
-                    scalarNames.Add(key);
-            }
-        }
+        // Create arrays only for available features
+        bool hasPosition = availableVector4Features.Contains("Position");
+        bool hasColors = availableVector4Features.Contains("Colors");
+        bool hasNormals = availableVector4Features.Contains("Normals");
+        bool hasIntensity = availableFloat32Features.Contains("Intensity");
 
-        // Initialize scalar arrays
-        foreach (var name in scalarNames)
+        if (hasPosition) result.PositionData = new Vector4[points.Length];
+        if (hasColors) result.ColorsData = new Vector4[points.Length];
+        if (hasNormals) result.NormalsData = new Vector4[points.Length];
+        if (hasIntensity) result.IntensityData = new float[points.Length];
+
+        // Initialize scalar arrays only for available scalars
+        foreach (var scalarName in availableFloat32Features)
         {
-            result.Scalars[name] = new float[points.Length];
+            if (scalarName != "Intensity") // Intensity is handled separately
+            {
+                result._scalarFeatures[scalarName] = new float[points.Length];
+            }
         }
 
         // Convert point data
         for (int i = 0; i < points.Length; i++)
         {
             var pt = points[i];
-            result.Positions[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
-            result.Colors[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
-            result.Normals[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
-            result.Intensities[i] = pt.Intensity;
+            
+            if (result.PositionData != null)
+                result.PositionData[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
+            
+            if (result.ColorsData != null)
+                result.ColorsData[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
+            
+            if (result.NormalsData != null)
+                result.NormalsData[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
+            
+            if (result.IntensityData != null)
+                result.IntensityData[i] = pt.Intensity;
 
             // Copy scalars
             if (pt.Scalars != null)
             {
                 foreach (var kvp in pt.Scalars)
                 {
-                    result.Scalars[kvp.Key][i] = kvp.Value;
+                    if (result._scalarFeatures.TryGetValue(kvp.Key, out var arr))
+                    {
+                        arr[i] = kvp.Value;
+                    }
                 }
             }
         }
@@ -182,10 +236,13 @@ public class BufferUpdateResult
     public long UpdateTimeMs { get; set; }
 
     /// <summary>
-    /// Sectors with new data to upload.
+    /// Mutable list of sectors with new data to upload.
+    /// Each sector contains a Features dictionary where key is feature name 
+    /// (Position, Colors, Normals, Intensity, or scalar names) and value contains 
+    /// the data array and byte offset for that feature.
     /// Upload these using DynamicBufferAdvanced SetData with the byte offsets.
     /// </summary>
-    public SectorData[] NewSectors { get; set; } = Array.Empty<SectorData>();
+    public List<SectorData> NewSectors { get; set; } = new();
 
     /// <summary>
     /// Sector indices that were released (cleared).
@@ -227,7 +284,7 @@ public class BufferUpdateResult
     /// <summary>
     /// True if there are new sectors to upload.
     /// </summary>
-    public bool HasNewData => NewSectors.Length > 0;
+    public bool HasNewData => NewSectors.Count > 0;
 }
 
 /// <summary>
@@ -281,16 +338,16 @@ public class BufferConfiguration
     public int GetByteOffsetFloat(int sectorIndex) => sectorIndex * MaxPointsPerSector * BytesPerFloat;
 
     /// <summary>
-    /// Creates configuration from buffer size in MB.
+    /// Creates configuration from buffer size in bytes.
     /// </summary>
-    /// <param name="bufferSizeMB">Desired buffer size in MB (per buffer type).</param>
+    /// <param name="bufferSizeBytes">Desired buffer size in bytes (per buffer type).</param>
     /// <param name="maxPointsPerSector">Maximum points per sector.</param>
-    public static BufferConfiguration FromBufferSize(int bufferSizeMB, int maxPointsPerSector = 65536)
+    public static BufferConfiguration FromBufferSize(long bufferSizeBytes, int maxPointsPerSector = 65536)
     {
         // Calculate how many sectors fit in the given size
         // Using Vector4 size (16 bytes) as reference since it's the largest per-element
-        int bytesPerSector = maxPointsPerSector * BytesPerVector4;
-        int sectorCount = Math.Max(1, (bufferSizeMB * 1024 * 1024) / bytesPerSector);
+        long bytesPerSector = (long)maxPointsPerSector * BytesPerVector4;
+        int sectorCount = Math.Max(1, (int)(bufferSizeBytes / bytesPerSector));
 
         return new BufferConfiguration
         {
