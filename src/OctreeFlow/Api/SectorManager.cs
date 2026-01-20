@@ -27,6 +27,10 @@ public class SectorManager : IDisposable
     
     // Mutable output list for NewSectors
     private readonly List<SectorData> _newSectorsList = new();
+    
+    // Store SectorData for ALL active sectors (keyed by sector index)
+    // This allows GetCombinedAllActiveData() to work correctly
+    private readonly Dictionary<int, SectorData> _activeSectorData = new();
 
     // Change tracking
     private readonly List<SectorData> _pendingUploads = new();
@@ -205,6 +209,7 @@ public class SectorManager : IDisposable
             }
 
             result.NewSectors = _newSectorsList;
+            result.AllActiveSectors = _activeSectorData.Values.ToList();
             result.ReleasedSectors = _releasedSectors.ToArray();
             result.ActiveSectors = GetActiveSectorsInternal();
             result.Version = _version;
@@ -267,7 +272,7 @@ public class SectorManager : IDisposable
         _version++;
 
         // Create sector data for upload
-        return SectorData.FromPointData(
+        var sectorData = SectorData.FromPointData(
             sectorIndex,
             sector.ByteOffsetVector4,
             sector.ByteOffsetFloat,
@@ -276,6 +281,11 @@ public class SectorManager : IDisposable
             pointData,
             _availableVector4Features,
             _availableFloat32Features);
+        
+        // Store in active sector data for GetCombinedAllActiveData()
+        _activeSectorData[sectorIndex] = sectorData;
+        
+        return sectorData;
     }
 
     private int FindEmptySector()
@@ -318,6 +328,7 @@ public class SectorManager : IDisposable
             _nodeToSector.Remove(nodeId);
             RemoveFromLru(nodeId);
             _releasedSectors.Add(sectorIndex);
+            _activeSectorData.Remove(sectorIndex); // Remove stored sector data
             _version++;
         }
     }
@@ -434,7 +445,20 @@ public class SectorManager : IDisposable
             }
             _nodeToSector.Clear();
             _lruList.Clear();
+            _activeSectorData.Clear();
             _version++;
+        }
+    }
+
+    /// <summary>
+    /// Gets all active sector data as a list.
+    /// Use this for GetCombinedAllActiveData() operations.
+    /// </summary>
+    internal List<SectorData> GetAllActiveSectorData()
+    {
+        lock (_lock)
+        {
+            return _activeSectorData.Values.ToList();
         }
     }
 

@@ -309,6 +309,12 @@ public class BufferUpdateResult
     public List<SectorData> NewSectors { get; set; } = new();
 
     /// <summary>
+    /// All active sectors' data (includes both new and previously loaded).
+    /// Use this for GetCombinedAllActiveData() to get the complete buffer state.
+    /// </summary>
+    public List<SectorData> AllActiveSectors { get; set; } = new();
+
+    /// <summary>
     /// Sector indices that were released (cleared).
     /// You may optionally zero these regions in your buffers.
     /// </summary>
@@ -351,13 +357,24 @@ public class BufferUpdateResult
     public bool HasNewData => NewSectors.Count > 0;
 
     /// <summary>
-    /// Gets combined buffer data from all NEW sectors, for uploading at offset 0.
-    /// Use this if DynamicBufferAdvanced doesn't support non-zero offsets.
-    /// Call this only when HasNewData is true.
+    /// Gets combined buffer data from all NEW sectors only, for uploading at offset 0.
+    /// WARNING: This only returns NEW data - previously loaded sectors are not included!
+    /// For complete buffer state, use GetCombinedAllActiveData() instead.
     /// </summary>
     public CombinedBufferData GetCombinedNewData()
     {
         return CombineAllSectorData(NewSectors);
+    }
+
+    /// <summary>
+    /// Gets combined buffer data from ALL ACTIVE sectors (both new and previously loaded).
+    /// Use this to get the complete buffer state for uploading at offset 0.
+    /// This is what you should use for simple vvvv gamma setups where you upload
+    /// the entire buffer each frame.
+    /// </summary>
+    public CombinedBufferData GetCombinedAllActiveData()
+    {
+        return CombineAllSectorData(AllActiveSectors);
     }
 
     /// <summary>
