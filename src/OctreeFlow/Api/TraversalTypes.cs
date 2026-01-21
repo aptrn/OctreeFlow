@@ -61,6 +61,20 @@ public struct TraversalDecision
 public delegate TraversalDecision TraversalDelegate(NodeInfo nodeInfo);
 
 /// <summary>
+/// Function type for traversal decisions.
+/// Use this with the Traverse method for a simple node-based input (not a region).
+/// In vvvv gamma, create a node that takes NodeInfo and outputs TraversalDecision,
+/// then pass that as the traversalFunction input.
+/// </summary>
+public static class TraversalFunction
+{
+    /// <summary>
+    /// Alias for Func&lt;NodeInfo, TraversalDecision&gt; to make it clearer in vvvv.
+    /// </summary>
+    public static Func<NodeInfo, TraversalDecision> Create(Func<NodeInfo, TraversalDecision> func) => func;
+}
+
+/// <summary>
 /// Result of a traversal operation.
 /// </summary>
 public class TraversalResult

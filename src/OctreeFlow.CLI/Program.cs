@@ -549,16 +549,19 @@ class Program
             Console.Write("Initializing reader... ");
             var sw = System.Diagnostics.Stopwatch.StartNew();
             
+            // Convert MB to bytes for the API
+            long gpuSizeBytes = (long)gpuSizeMB * 1024 * 1024;
+            
             using var reader = new OctreeFlowReader(
                 octreeFile.FullName,
                 plyFile.FullName,
                 cacheSizeMB,
-                gpuSizeMB);
+                gpuSizeBytes);
 
-            await reader.InitializeAsync((current, total) =>
+            await reader.InitializeAsync((status, current, total) =>
             {
                 int percent = total > 0 ? (int)(100.0 * current / total) : 0;
-                Console.Write($"\rInitializing reader... {percent}%   ");
+                Console.Write($"\rInitializing reader... {status} {percent}%   ");
             });
 
             sw.Stop();
@@ -568,6 +571,19 @@ class Program
             Console.WriteLine($"Total nodes:  {reader.TotalNodes:N0}");
             Console.WriteLine($"Total points: {reader.TotalPoints:N0}");
             Console.WriteLine($"Bounds:       {reader.Bounds.Minimum} - {reader.Bounds.Maximum}");
+            Console.WriteLine();
+
+            // Display available features
+            Console.WriteLine("Available features (Vector4):");
+            foreach (var feature in reader.FeaturesVector4)
+            {
+                Console.WriteLine($"  {feature.Key}");
+            }
+            Console.WriteLine("Available features (Float32):");
+            foreach (var feature in reader.FeaturesFloat32)
+            {
+                Console.WriteLine($"  {feature.Key}");
+            }
             Console.WriteLine();
 
             // Define a traversal delegate that accepts nodes up to maxDepth
@@ -610,39 +626,59 @@ class Program
             Console.WriteLine($"  Cache version: {cacheResult.Version}");
             Console.WriteLine();
 
-            // Load to GPU (simulated - no actual GPU upload)
-            Console.Write("Allocating GPU sectors... ");
+            // Update sector manager (buffer data output)
+            Console.Write("Preparing buffer data... ");
             sw.Restart();
 
-            int sectorDataCount = 0;
-            var gpuResult = await reader.LoadToGpuAsync(
-                traversalResult.ViewingNodes,
-                (sectorIndex, nodeId, pointData) =>
-                {
-                    // This callback would normally upload data to actual GPU
-                    sectorDataCount++;
-                });
+            var bufferResult = reader.SectorManager!.Update(traversalResult.ViewingNodes);
 
             sw.Stop();
-            Console.WriteLine($"Done! ({gpuResult.LoadTimeMs}ms)");
-            Console.WriteLine($"  Nodes loaded:   {gpuResult.NodesLoaded:N0}");
-            Console.WriteLine($"  Points on GPU:  {gpuResult.TotalPointsLoaded:N0}");
-            Console.WriteLine($"  Active sectors: {gpuResult.SectorActivations.Count(s => s.IsActive)}");
-            Console.WriteLine($"  GPU version:    {gpuResult.Version}");
+            Console.WriteLine($"Done! ({bufferResult.UpdateTimeMs}ms)");
+            Console.WriteLine($"  Nodes loaded:   {bufferResult.NodesLoaded:N0}");
+            Console.WriteLine($"  Points in buffer: {bufferResult.TotalPointsInBuffer:N0}");
+            Console.WriteLine($"  Active sectors: {bufferResult.ActiveSectors.Length}");
+            Console.WriteLine($"  New sectors:    {bufferResult.NewSectors.Count}");
+            Console.WriteLine($"  Buffer version: {bufferResult.Version}");
             Console.WriteLine();
 
             // Display sector info
-            var activeSectors = gpuResult.SectorActivations.Where(s => s.IsActive).Take(10).ToList();
+            var activeSectors = bufferResult.ActiveSectors.Take(10).ToList();
             if (activeSectors.Any())
             {
-                Console.WriteLine("Sample GPU sectors:");
+                Console.WriteLine("Sample buffer sectors:");
                 foreach (var sector in activeSectors)
                 {
                     Console.WriteLine($"  Sector {sector.SectorIndex}: Node {sector.NodeId}, {sector.PointCount:N0} points");
+                    Console.WriteLine($"    ByteOffset Vector4: {sector.ByteOffsetVector4}, Float: {sector.ByteOffsetFloat}");
                 }
-                if (gpuResult.SectorActivations.Count(s => s.IsActive) > 10)
+                if (bufferResult.ActiveSectors.Length > 10)
                 {
-                    Console.WriteLine($"  ... and {gpuResult.SectorActivations.Count(s => s.IsActive) - 10} more");
+                    Console.WriteLine($"  ... and {bufferResult.ActiveSectors.Length - 10} more");
+                }
+            }
+            
+            // Display new sector feature data structure
+            if (bufferResult.NewSectors.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("New sector data structure (first sector):");
+                var firstSector = bufferResult.NewSectors[0];
+                Console.WriteLine($"  Sector {firstSector.SectorIndex}: {firstSector.PointCount} points");
+                Console.WriteLine($"  ByteOffsetVector4: {firstSector.ByteOffsetVector4}");
+                Console.WriteLine($"  ByteOffsetFloat32: {firstSector.ByteOffsetFloat32}");
+                Console.WriteLine($"  Vector4 Features:");
+                if (firstSector.HasPosition)
+                    Console.WriteLine($"    Position: {firstSector.PositionData!.Length} elements");
+                if (firstSector.HasColors)
+                    Console.WriteLine($"    Colors: {firstSector.ColorsData!.Length} elements");
+                if (firstSector.HasNormals)
+                    Console.WriteLine($"    Normals: {firstSector.NormalsData!.Length} elements");
+                Console.WriteLine($"  Float32 Features:");
+                if (firstSector.HasIntensity)
+                    Console.WriteLine($"    Intensity: {firstSector.IntensityData!.Length} elements");
+                foreach (var feature in firstSector.ScalarFeatures)
+                {
+                    Console.WriteLine($"    {feature.Key}: {feature.Value.Length} elements");
                 }
             }
 
@@ -654,7 +690,7 @@ class Program
             // Now demo the simpler UpdateFrame API
             Console.WriteLine();
             Console.WriteLine("═══════════════════════════════════════════════════════════════");
-            Console.WriteLine("  Demonstrating simplified UpdateFrame API (auto-managed GPU)");
+            Console.WriteLine("  Demonstrating simplified UpdateFrame API");
             Console.WriteLine("═══════════════════════════════════════════════════════════════");
             Console.WriteLine();
 
@@ -663,7 +699,8 @@ class Program
             {
                 int targetDepth = 2 + frame; // Increasing depth each frame
                 
-                var frameResult = reader.UpdateFrame(nodeInfo =>
+                // Step 1: Traverse (separate from buffer update)
+                var traversal = reader.Traverse(nodeInfo =>
                 {
                     bool accept = nodeInfo.Level <= targetDepth;
                     bool display = accept && (nodeInfo.Level == targetDepth || nodeInfo.IsLeaf);
@@ -671,11 +708,14 @@ class Program
                     return new TraversalDecision(accept, display, continueChildren);
                 });
 
+                // Step 2: Update buffer with traversal result
+                var frameResult = reader.UpdateFrame(traversal);
+
                 Console.WriteLine($"Frame {frame + 1} (depth={targetDepth}):");
                 Console.WriteLine($"  Total time:        {frameResult.TotalTimeMs}ms");
                 Console.WriteLine($"  Viewing nodes:     {frameResult.Traversal.ViewingNodes.Count}");
-                Console.WriteLine($"  GPU uploads:       {frameResult.Uploads.Length}");
-                Console.WriteLine($"  Points on GPU:     {frameResult.TotalPointsOnGpu:N0}");
+                Console.WriteLine($"  New sectors:       {frameResult.NewSectors.Count}");
+                Console.WriteLine($"  Points in buffer:  {frameResult.TotalPointsInBuffer:N0}");
                 Console.WriteLine($"  Active sectors:    {frameResult.ActiveSectors.Length}");
                 Console.WriteLine();
             }

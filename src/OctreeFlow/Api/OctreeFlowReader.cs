@@ -2,31 +2,51 @@ using OctreeFlow.Core;
 using OctreeFlow.Data;
 using OctreeFlow.IO;
 using Stride.Core.Mathematics;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace OctreeFlow.Api;
 
 /// <summary>
 /// Main API for reading and traversing octree point cloud data.
-/// Handles loading from .octree and .ply files, traversal, RAM caching, and GPU loading.
-/// Designed for use with VVVV Gamma.
+/// Handles loading from .octree and .ply files, traversal, RAM caching, and buffer data output.
+/// Designed for use with VVVV Gamma - outputs data ready for DynamicBufferAdvanced.
+/// 
+/// Workflow:
+/// 1. Create reader with paths and settings
+/// 2. Call Initialize() once
+/// 3. Each frame: Call UpdateFrame() with your traversal delegate
+/// 4. Use the BufferUpdateResult to upload new sectors to your DynamicBufferAdvanced buffers
+/// 5. Use ActiveSectors for rendering dispatch
 /// </summary>
 public class OctreeFlowReader : IDisposable
 {
     private readonly string _octreePath;
     private readonly string _plyPath;
-    private readonly CacheManager _cache;
-    private readonly GpuSectorManager _gpuManager;
-    private readonly GpuLoader _gpuLoader;
-    private readonly PlyIndex _plyIndex;
-    private readonly Dictionary<string, NodeInfo> _nodeInfoCache = new();
-    private readonly int _maxPointsPerNode;
-    
+    private readonly int _cacheSizeMB;
+    private readonly long _bufferSizeBytes;
+    private readonly int _maxPointsPerSector;
+
+    private CacheManager? _cache;
+    private SectorManager? _sectorManager;
     private OctreeNode? _root;
     private OctreeFileInfo? _fileInfo;
+    private PlyIndex? _plyIndex;
+    private readonly Dictionary<string, NodeInfo> _nodeInfoCache = new();
+    private Dictionary<string, Vector4[]>? _featuresVector4;
+    private Dictionary<string, float[]>? _featuresFloat32;
+
     private int _traversalVersion;
     private bool _isInitialized;
+    
+    // Cached traversal result - return same object if content unchanged
+    private TraversalResult? _cachedTraversalResult;
+    private HashSet<string> _lastViewingNodeIds = new();
+    
+    // Cached frame update result - return same object if buffer state unchanged
+    private FrameUpdateResult? _cachedFrameUpdateResult;
+    private int _lastBufferVersion;
+
+    #region Public Properties
 
     /// <summary>
     /// Root node of the octree.
@@ -41,17 +61,17 @@ public class OctreeFlowReader : IDisposable
     /// <summary>
     /// The RAM cache manager.
     /// </summary>
-    public CacheManager Cache => _cache;
+    public CacheManager? Cache => _cache;
 
     /// <summary>
-    /// The GPU sector manager (manual management).
+    /// The sector manager for buffer data.
     /// </summary>
-    public GpuSectorManager GpuManager => _gpuManager;
+    public SectorManager? SectorManager => _sectorManager;
 
     /// <summary>
-    /// The automatic GPU loader (recommended - handles everything).
+    /// Buffer configuration.
     /// </summary>
-    public GpuLoader GpuLoader => _gpuLoader;
+    public BufferConfiguration? BufferConfig => _sectorManager?.Configuration;
 
     /// <summary>
     /// Whether the reader has been initialized.
@@ -74,27 +94,142 @@ public class OctreeFlowReader : IDisposable
     public int TotalNodes => _fileInfo?.NodeCount ?? 0;
 
     /// <summary>
+    /// Points per sector.
+    /// </summary>
+    public int MaxPointsPerSector => _maxPointsPerSector;
+
+    /// <summary>
+    /// Number of sectors in buffer.
+    /// </summary>
+    public int SectorCount => _sectorManager?.SectorCount ?? 0;
+
+    /// <summary>
+    /// Total buffer capacity in points.
+    /// </summary>
+    public int BufferCapacity => BufferConfig?.TotalCapacity ?? 0;
+
+    /// <summary>
+    /// Total buffer size in bytes for Vector4 buffers.
+    /// Use this to create your DynamicBufferAdvanced&lt;Vector4&gt; with the correct size.
+    /// </summary>
+    public long BufferSizeBytesVector4 => BufferConfig?.TotalBytesVector4 ?? 0;
+
+    /// <summary>
+    /// Total buffer size in bytes for Float32 buffers.
+    /// Use this to create your DynamicBufferAdvanced&lt;float&gt; with the correct size.
+    /// </summary>
+    public long BufferSizeBytesFloat32 => BufferConfig?.TotalBytesFloat ?? 0;
+
+    /// <summary>
+    /// Available properties from the PLY file.
+    /// </summary>
+    public IReadOnlyList<PlyProperty> PlyProperties => _plyIndex?.Properties ?? Array.Empty<PlyProperty>().ToList();
+
+    /// <summary>
+    /// Sequence of Vector4 feature names mapped to typed arrays for buffer initialization.
+    /// Keys: "Position", "Colors", "Normals".
+    /// Values: Vector4[] arrays sized to buffer capacity.
+    /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, Vector4[]>> FeaturesVector4 => 
+        _featuresVector4 ?? Enumerable.Empty<KeyValuePair<string, Vector4[]>>();
+
+    /// <summary>
+    /// Sequence of Float32 feature names mapped to typed arrays for buffer initialization.
+    /// Keys: "Intensity" and any scalar dimension names.
+    /// Values: float[] arrays sized to buffer capacity.
+    /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, float[]>> FeaturesFloat32 => 
+        _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>();
+
+    /// <summary>
+    /// Checks if a Vector4 feature exists (Position, Colors, Normals).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>True if the feature is available.</returns>
+    public bool HasFeatureVector4(string name) => _featuresVector4?.ContainsKey(name) ?? false;
+
+    /// <summary>
+    /// Checks if a Float32 feature exists (Intensity or any scalar).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Intensity" or scalar property name).</param>
+    /// <returns>True if the feature is available.</returns>
+    public bool HasFeatureFloat32(string name) => _featuresFloat32?.ContainsKey(name) ?? false;
+
+    /// <summary>
+    /// Checks if a scalar feature exists by name.
+    /// This checks the Float32 features excluding Intensity.
+    /// </summary>
+    /// <param name="name">Scalar property name from the PLY file.</param>
+    /// <returns>True if the scalar feature is available.</returns>
+    public bool HasScalarFeature(string name)
+    {
+        if (_featuresFloat32 == null) return false;
+        // Check if it exists and is not "Intensity" (which is a standard feature)
+        return name != "Intensity" && _featuresFloat32.ContainsKey(name);
+    }
+
+    /// <summary>
+    /// Gets the names of all available scalar features (excluding standard features like Intensity).
+    /// </summary>
+    public IEnumerable<string> ScalarFeatureNames => 
+        _featuresFloat32?.Keys.Where(k => k != "Intensity") ?? Enumerable.Empty<string>();
+
+    /// <summary>
+    /// Gets the buffer array for a specific Vector4 feature.
+    /// Use this to get the correctly-sized array for a specific feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>The Vector4 array, or null if not available.</returns>
+    public Vector4[]? GetFeatureVector4(string name)
+    {
+        if (_featuresVector4 == null) return null;
+        return _featuresVector4.TryGetValue(name, out var arr) ? arr : null;
+    }
+
+    /// <summary>
+    /// Gets the buffer array for a specific Float32 feature.
+    /// Use this to get the correctly-sized array for a specific feature (Intensity or scalar).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Intensity" or scalar property name).</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetFeatureFloat32(string name)
+    {
+        if (_featuresFloat32 == null) return null;
+        return _featuresFloat32.TryGetValue(name, out var arr) ? arr : null;
+    }
+
+    /// <summary>
+    /// Gets the buffer array for a specific scalar feature.
+    /// Alias for GetFeatureFloat32 but more semantic for scalar usage.
+    /// </summary>
+    /// <param name="name">Scalar property name from the PLY file.</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetScalarData(string name) => GetFeatureFloat32(name);
+
+    #endregion
+
+    /// <summary>
     /// Creates a new OctreeFlowReader.
     /// </summary>
     /// <param name="octreePath">Path to the .octree file.</param>
     /// <param name="plyPath">Path to the .ply file.</param>
     /// <param name="cacheSizeMB">RAM cache size in megabytes.</param>
-    /// <param name="gpuBufferSizeMB">Maximum GPU buffer size in megabytes.</param>
-    /// <param name="maxPointsPerNode">Maximum points per octree node (determines GPU sector size).</param>
+    /// <param name="bufferSizeBytes">Buffer size in bytes (for sector calculation).</param>
+    /// <param name="maxPointsPerSector">Maximum points per sector.</param>
     public OctreeFlowReader(
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int gpuBufferSizeMB = 256,
-        int maxPointsPerNode = 65536)
+        long bufferSizeBytes = 268435456, // 256 MB default
+        int maxPointsPerSector = 65536)
     {
         _octreePath = octreePath;
         _plyPath = plyPath;
-        _maxPointsPerNode = maxPointsPerNode;
-        _cache = new CacheManager(cacheSizeMB);
-        _gpuManager = new GpuSectorManager(gpuBufferSizeMB, maxPointsPerNode);
-        _gpuLoader = new GpuLoader(_cache, gpuBufferSizeMB, maxPointsPerNode);
-        _plyIndex = new PlyIndex(plyPath);
+        _cacheSizeMB = cacheSizeMB;
+        _bufferSizeBytes = bufferSizeBytes;
+        _maxPointsPerSector = maxPointsPerSector;
     }
 
     /// <summary>
@@ -104,10 +239,10 @@ public class OctreeFlowReader : IDisposable
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int gpuBufferSizeMB = 256,
-        int maxPointsPerNode = 65536)
+        long bufferSizeBytes = 268435456, // 256 MB default
+        int maxPointsPerSector = 65536)
     {
-        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, gpuBufferSizeMB, maxPointsPerNode);
+        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, bufferSizeBytes, maxPointsPerSector);
         reader.Initialize();
         return reader;
     }
@@ -122,45 +257,117 @@ public class OctreeFlowReader : IDisposable
         // Load octree structure
         var serializer = new StreamingOctreeSerializer();
         var (root, info) = serializer.LoadOctreeFile(_octreePath);
-        
+
         _root = root ?? throw new InvalidOperationException("Failed to load octree file");
         _fileInfo = info;
 
-        // Build PLY index (lightweight - just parse header, skip bounds computation)
+        // Build PLY index (lightweight - just parse header)
+        _plyIndex = new PlyIndex(_plyPath);
         _plyIndex.BuildIndexHeaderOnly();
 
         // Build node info cache
         BuildNodeInfoCache(_root);
 
+        // Create RAM cache
+        _cache = new CacheManager(_cacheSizeMB);
+
+        // Create sector manager (need this before BuildFeatureInfo for buffer capacity)
+        var config = BufferConfiguration.FromBufferSize(_bufferSizeBytes, _maxPointsPerSector);
+        _sectorManager = new SectorManager(_cache, config);
+
+        // Build feature info dictionaries with correctly sized arrays
+        BuildFeatureInfo(config.TotalCapacity);
+
+        // Tell SectorManager which features are available (so it only creates matching data)
+        _sectorManager.SetAvailableFeatures(
+            _featuresVector4?.Keys ?? Enumerable.Empty<string>(),
+            _featuresFloat32?.Keys ?? Enumerable.Empty<string>());
+
         _isInitialized = true;
+    }
+
+    /// <summary>
+    /// Builds the feature info dictionaries from PLY properties.
+    /// Populates FeaturesVector4 and FeaturesFloat32 with correctly-sized arrays for buffer initialization.
+    /// </summary>
+    /// <param name="bufferCapacity">Total buffer capacity in points (used to size the arrays).</param>
+    private void BuildFeatureInfo(int bufferCapacity)
+    {
+        _featuresVector4 = new Dictionary<string, Vector4[]>();
+        _featuresFloat32 = new Dictionary<string, float[]>();
+
+        if (_plyIndex == null) return;
+
+        // Standard Vector4 features (always present if PLY has x,y,z)
+        bool hasPosition = false;
+        bool hasColors = false;
+        bool hasNormals = false;
+        bool hasIntensity = false;
+
+        foreach (var prop in _plyIndex.Properties)
+        {
+            var name = prop.Name.ToLower();
+
+            // Check for position components
+            if (name == "x" || name == "y" || name == "z")
+            {
+                hasPosition = true;
+            }
+            // Check for color components
+            else if (name == "red" || name == "r" || name == "green" || name == "g" || 
+                     name == "blue" || name == "b" || name == "alpha" || name == "a")
+            {
+                hasColors = true;
+            }
+            // Check for normal components
+            else if (name == "nx" || name == "ny" || name == "nz")
+            {
+                hasNormals = true;
+            }
+            // Check for intensity
+            else if (name == "intensity" || name == "scalar_intensity")
+            {
+                hasIntensity = true;
+            }
+            // Everything else is a scalar
+            else
+            {
+                // Add as scalar feature with correctly-sized float array
+                _featuresFloat32[prop.Name] = new float[bufferCapacity];
+            }
+        }
+
+        // Add standard features based on what was found (with correctly-sized arrays)
+        if (hasPosition)
+        {
+            _featuresVector4["Position"] = new Vector4[bufferCapacity];
+        }
+        if (hasColors)
+        {
+            _featuresVector4["Colors"] = new Vector4[bufferCapacity];
+        }
+        if (hasNormals)
+        {
+            _featuresVector4["Normals"] = new Vector4[bufferCapacity];
+        }
+        if (hasIntensity)
+        {
+            _featuresFloat32["Intensity"] = new float[bufferCapacity];
+        }
     }
 
     /// <summary>
     /// Initializes the reader asynchronously.
     /// </summary>
-    public async Task InitializeAsync(Action<int, int>? onProgress = null)
+    public async Task InitializeAsync(Action<string, int, int>? onProgress = null)
     {
         if (_isInitialized) return;
 
         await Task.Run(() =>
         {
-            // Load octree structure
-            var serializer = new StreamingOctreeSerializer();
-            var (root, info) = serializer.LoadOctreeFile(_octreePath);
-            
-            _root = root ?? throw new InvalidOperationException("Failed to load octree file");
-            _fileInfo = info;
-
-            // Build PLY index (lightweight - just parse header, skip bounds computation)
-            // We use the bounds from the octree file instead
-            _plyIndex.BuildIndexHeaderOnly();
-
-            // Build node info cache
-            BuildNodeInfoCache(_root);
-
-            _isInitialized = true;
-            
-            onProgress?.Invoke(1, 1);
+            onProgress?.Invoke("Loading octree...", 0, 100);
+            Initialize();
+            onProgress?.Invoke("Ready", 100, 100);
         });
     }
 
@@ -184,38 +391,241 @@ public class OctreeFlowReader : IDisposable
     }
 
     /// <summary>
-    /// Traverses the octree using the provided delegate.
-    /// The delegate is called for each node starting from the root.
+    /// Gets statistics about the octree structure per level.
+    /// Useful for debugging to see how points are distributed.
     /// </summary>
-    /// <param name="traversalDelegate">Delegate that decides how to handle each node.</param>
-    /// <returns>Result containing caching and viewing node lists.</returns>
-    public TraversalResult Traverse(TraversalDelegate traversalDelegate)
+    /// <returns>Dictionary where key is level and value is (nodeCount, totalPoints).</returns>
+    public Dictionary<int, (int NodeCount, int TotalPoints)> GetLevelStats()
+    {
+        EnsureInitialized();
+        
+        var stats = new Dictionary<int, (int NodeCount, int TotalPoints)>();
+        
+        foreach (var nodeInfo in _nodeInfoCache.Values)
+        {
+            if (!stats.ContainsKey(nodeInfo.Level))
+            {
+                stats[nodeInfo.Level] = (0, 0);
+            }
+            
+            var current = stats[nodeInfo.Level];
+            stats[nodeInfo.Level] = (current.NodeCount + 1, current.TotalPoints + nodeInfo.PointCount);
+        }
+        
+        return stats;
+    }
+
+    /// <summary>
+    /// Gets all NodeInfo objects at a specific level.
+    /// </summary>
+    public IEnumerable<NodeInfo> GetNodesAtLevel(int level)
+    {
+        EnsureInitialized();
+        return _nodeInfoCache.Values.Where(n => n.Level == level);
+    }
+
+    /// <summary>
+    /// Gets the maximum depth of the octree.
+    /// </summary>
+    public int MaxDepth => _nodeInfoCache.Values.Max(n => n.Level);
+
+    #region Simple Traversal Methods (No Delegate Required)
+
+    /// <summary>
+    /// Traverses and selects all nodes at exactly the specified level.
+    /// Easy to use without regions - just pass the level number.
+    /// </summary>
+    /// <param name="targetLevel">The level to select (0 = root, 1 = first children, etc.)</param>
+    /// <returns>Result containing nodes at the target level.</returns>
+    public TraversalResult TraverseToLevel(int targetLevel)
+    {
+        return Traverse(node =>
+        {
+            if (node.Level == targetLevel)
+                return TraversalDecision.DisplayAndStop;
+            else if (node.Level < targetLevel)
+                return TraversalDecision.SkipButContinue;
+            else
+                return TraversalDecision.Reject;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects all nodes from root up to and including the specified level.
+    /// </summary>
+    /// <param name="maxLevel">The maximum level to include (0 = root only, 1 = root + first children, etc.)</param>
+    /// <returns>Result containing nodes up to maxLevel.</returns>
+    public TraversalResult TraverseUpToLevel(int maxLevel)
+    {
+        return Traverse(node =>
+        {
+            if (node.Level <= maxLevel)
+            {
+                bool continueDeeper = node.Level < maxLevel && !node.IsLeaf;
+                return new TraversalDecision(true, true, continueDeeper);
+            }
+            return TraversalDecision.Reject;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes until reaching approximately the target point count.
+    /// Prioritizes coarser levels (lower detail) first.
+    /// </summary>
+    /// <param name="targetPointCount">Approximate maximum number of points to select.</param>
+    /// <returns>Result containing nodes up to the point budget.</returns>
+    public TraversalResult TraverseByPointBudget(int targetPointCount)
+    {
+        int currentPoints = 0;
+        
+        return Traverse(node =>
+        {
+            if (currentPoints >= targetPointCount)
+                return TraversalDecision.Reject;
+
+            currentPoints += node.PointCount;
+            
+            bool continueDeeper = currentPoints < targetPointCount && !node.IsLeaf;
+            return new TraversalDecision(true, true, continueDeeper);
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects all leaf nodes (nodes with no children).
+    /// This gives the highest detail available.
+    /// </summary>
+    /// <returns>Result containing all leaf nodes.</returns>
+    public TraversalResult TraverseLeaves()
+    {
+        return Traverse(node =>
+        {
+            if (node.IsLeaf)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.SkipButContinue;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes that intersect with the given bounding box.
+    /// Only includes nodes whose bounds overlap with the view bounds.
+    /// </summary>
+    /// <param name="viewBounds">The bounding box to test intersection with.</param>
+    /// <param name="maxLevel">Maximum level to traverse to (-1 for unlimited).</param>
+    /// <returns>Result containing nodes that intersect the view bounds.</returns>
+    public TraversalResult TraverseByBounds(BoundingBox viewBounds, int maxLevel = -1)
+    {
+        return Traverse(node =>
+        {
+            // Check if node intersects view bounds
+            bool intersects = node.BoundingBox.Intersects(ref viewBounds);
+            
+            if (!intersects)
+                return TraversalDecision.Reject;
+
+            // Check level limit
+            if (maxLevel >= 0 && node.Level >= maxLevel)
+                return TraversalDecision.DisplayAndStop;
+
+            // Node intersects - include it and continue to children
+            if (node.IsLeaf)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.DisplayAndContinue;
+        });
+    }
+
+    /// <summary>
+    /// Traverses and selects nodes based on distance from a camera position.
+    /// Closer nodes get more detail (deeper levels), farther nodes get less detail.
+    /// </summary>
+    /// <param name="cameraPosition">The camera/viewer position.</param>
+    /// <param name="detailBias">Higher values = more detail. Default 1.0. Range: 0.1 to 10.0</param>
+    /// <param name="maxPoints">Maximum points to select (0 = unlimited).</param>
+    /// <returns>Result containing nodes selected by distance-based LOD.</returns>
+    public TraversalResult TraverseByDistance(Vector3 cameraPosition, float detailBias = 1.0f, int maxPoints = 0)
+    {
+        int currentPoints = 0;
+        
+        return Traverse(node =>
+        {
+            // Check point budget
+            if (maxPoints > 0 && currentPoints >= maxPoints)
+                return TraversalDecision.Reject;
+
+            // Calculate distance from camera to node center
+            float distance = Vector3.Distance(cameraPosition, node.Center);
+            
+            // Calculate node size (use largest dimension)
+            float nodeSize = Math.Max(Math.Max(node.Size.X, node.Size.Y), node.Size.Z);
+            
+            // Screen-space size heuristic: larger nodes or closer nodes should subdivide
+            // screenSize approximates how big the node appears on screen
+            float screenSize = (nodeSize / Math.Max(distance, 0.001f)) * detailBias;
+            
+            // Threshold for subdivision (tune this value)
+            float subdivideThreshold = 0.1f;
+            
+            currentPoints += node.PointCount;
+
+            if (node.IsLeaf || screenSize < subdivideThreshold)
+                return TraversalDecision.DisplayAndStop;
+            else
+                return TraversalDecision.DisplayAndContinue;
+        });
+    }
+
+    #endregion
+
+    /// <summary>
+    /// Traverses the octree using the provided function.
+    /// This appears as a regular node input in vvvv gamma (not a region).
+    /// Pass a Func&lt;NodeInfo, TraversalDecision&gt; that decides how to handle each node.
+    /// 
+    /// IMPORTANT: Returns the SAME TraversalResult object if the viewing nodes haven't changed.
+    /// This prevents unnecessary downstream updates in vvvv gamma.
+    /// </summary>
+    /// <param name="traversalFunction">Function that takes NodeInfo and returns TraversalDecision.</param>
+    /// <returns>Result containing caching and viewing node lists. Same object if unchanged.</returns>
+    public TraversalResult Traverse(Func<NodeInfo, TraversalDecision> traversalFunction)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
-        var result = new TraversalResult
-        {
-            Version = Interlocked.Increment(ref _traversalVersion)
-        };
+        var result = new TraversalResult();
 
         if (_root == null)
         {
             result.IsComplete = true;
             result.TraversalTimeMs = sw.ElapsedMilliseconds;
-            return result;
+            result.Version = _traversalVersion;
+            return _cachedTraversalResult ?? result;
         }
 
-        TraverseNode(_root, traversalDelegate, result);
+        TraverseNode(_root, traversalFunction, result);
 
         sw.Stop();
         result.TraversalTimeMs = sw.ElapsedMilliseconds;
         result.IsComplete = true;
 
+        // Check if viewing nodes changed
+        var currentNodeIds = new HashSet<string>(result.ViewingNodes.Select(n => n.Id));
+        
+        if (_cachedTraversalResult != null && currentNodeIds.SetEquals(_lastViewingNodeIds))
+        {
+            // Content unchanged - return the SAME object (no "Changed" trigger in vvvv)
+            return _cachedTraversalResult;
+        }
+
+        // Content changed - increment version and cache new result
+        result.Version = Interlocked.Increment(ref _traversalVersion);
+        _lastViewingNodeIds = currentNodeIds;
+        _cachedTraversalResult = result;
+
         return result;
     }
 
-    private void TraverseNode(OctreeNode node, TraversalDelegate del, TraversalResult result)
+    private void TraverseNode(OctreeNode node, Func<NodeInfo, TraversalDecision> func, TraversalResult result)
     {
         result.NodesVisited++;
 
@@ -226,15 +636,15 @@ public class OctreeFlowReader : IDisposable
             _nodeInfoCache[node.Id] = nodeInfo;
         }
 
-        // Update status from cache and GPU
+        // Update status from cache and sector manager
         nodeInfo.UpdateStatus(
-            _cache.Contains(node.Id),
-            _gpuManager.Contains(node.Id),
-            _gpuManager.GetSectorForNode(node.Id)
+            _cache?.Contains(node.Id) ?? false,
+            _sectorManager?.Contains(node.Id) ?? false,
+            _sectorManager?.GetSectorFor(node.Id) ?? -1
         );
 
-        // Call delegate
-        var decision = del(nodeInfo);
+        // Call function
+        var decision = func(nodeInfo);
 
         if (decision.IsAccepted)
         {
@@ -252,76 +662,23 @@ public class OctreeFlowReader : IDisposable
         {
             foreach (var child in node.Children)
             {
-                TraverseNode(child, del, result);
+                TraverseNode(child, func, result);
             }
         }
     }
 
     /// <summary>
-    /// Loads specified nodes into RAM cache asynchronously.
+    /// Loads specified nodes into RAM cache.
     /// </summary>
     /// <param name="nodes">Nodes to load into cache.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Result of the cache loading operation.</returns>
-    public async Task<CacheLoadResult> LoadToCacheAsync(
-        IEnumerable<NodeInfo> nodes,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureInitialized();
-
-        var sw = Stopwatch.StartNew();
-        var result = new CacheLoadResult();
-        var nodesToLoad = nodes.Where(n => !_cache.Contains(n.Id)).ToList();
-
-        try
-        {
-            await Task.Run(() =>
-            {
-                foreach (var nodeInfo in nodesToLoad)
-                {
-                    if (cancellationToken.IsCancellationRequested) break;
-
-                    // Get point indices from the octree node
-                    var indices = nodeInfo.Node.PointIndices?.ToArray();
-                    if (indices != null && indices.Length > 0)
-                    {
-                        // Read point data from PLY file
-                        var pointData = ReadPointData(indices);
-                        
-                        _cache.Add(nodeInfo.Id, indices, pointData);
-                        result.LoadedNodes[nodeInfo.Id] = indices;
-                    }
-                }
-            }, cancellationToken);
-
-            result.Version = _cache.Version;
-            result.IsComplete = !cancellationToken.IsCancellationRequested;
-        }
-        catch (OperationCanceledException)
-        {
-            result.IsComplete = false;
-        }
-        catch (Exception ex)
-        {
-            result.Error = ex.Message;
-            result.IsComplete = false;
-        }
-
-        sw.Stop();
-        result.LoadTimeMs = sw.ElapsedMilliseconds;
-        return result;
-    }
-
-    /// <summary>
-    /// Loads specified nodes into RAM cache synchronously.
-    /// </summary>
     public CacheLoadResult LoadToCache(IEnumerable<NodeInfo> nodes)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
         var result = new CacheLoadResult();
-        var nodesToLoad = nodes.Where(n => !_cache.Contains(n.Id)).ToList();
+        var nodesToLoad = nodes.Where(n => !_cache!.Contains(n.Id)).ToList();
 
         try
         {
@@ -331,12 +688,12 @@ public class OctreeFlowReader : IDisposable
                 if (indices != null && indices.Length > 0)
                 {
                     var pointData = ReadPointData(indices);
-                    _cache.Add(nodeInfo.Id, indices, pointData);
+                    _cache!.Add(nodeInfo.Id, indices, pointData);
                     result.LoadedNodes[nodeInfo.Id] = indices;
                 }
             }
 
-            result.Version = _cache.Version;
+            result.Version = _cache!.Version;
             result.IsComplete = true;
         }
         catch (Exception ex)
@@ -351,79 +708,37 @@ public class OctreeFlowReader : IDisposable
     }
 
     /// <summary>
-    /// Loads specified nodes to GPU asynchronously.
-    /// First ensures nodes are in RAM cache, then uploads to GPU sectors.
+    /// Loads specified nodes into RAM cache asynchronously.
     /// </summary>
-    /// <param name="nodes">Nodes to load to GPU.</param>
-    /// <param name="onSectorData">Callback to upload data to actual GPU buffer (called per sector).</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Result of the GPU loading operation.</returns>
-    public async Task<GpuLoadResult> LoadToGpuAsync(
+    public async Task<CacheLoadResult> LoadToCacheAsync(
         IEnumerable<NodeInfo> nodes,
-        Action<int, string, PointData[]>? onSectorData = null,
         CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
 
         var sw = Stopwatch.StartNew();
-        var result = new GpuLoadResult();
-        var nodeList = nodes.ToList();
-
-        // First, ensure all nodes are in cache
-        var notInCache = nodeList.Where(n => !_cache.Contains(n.Id)).ToList();
-        if (notInCache.Count > 0)
-        {
-            await LoadToCacheAsync(notInCache, cancellationToken);
-        }
+        var result = new CacheLoadResult();
+        var nodesToLoad = nodes.Where(n => !_cache!.Contains(n.Id)).ToList();
 
         try
         {
-            // Release sectors for nodes no longer needed
-            var currentGpuNodes = _gpuManager.GetLoadedNodeIds().ToHashSet();
-            var neededNodes = nodeList.Select(n => n.Id).ToHashSet();
-            
-            foreach (var nodeId in currentGpuNodes)
+            await Task.Run(() =>
             {
-                if (!neededNodes.Contains(nodeId))
+                foreach (var nodeInfo in nodesToLoad)
                 {
-                    _gpuManager.ReleaseSector(nodeId);
-                }
-            }
+                    if (cancellationToken.IsCancellationRequested) break;
 
-            // Allocate sectors for new nodes
-            int loaded = 0;
-            int totalPoints = 0;
-
-            foreach (var nodeInfo in nodeList)
-            {
-                if (cancellationToken.IsCancellationRequested) break;
-
-                if (!_gpuManager.Contains(nodeInfo.Id))
-                {
-                    int sectorIndex = _gpuManager.AllocateSector(nodeInfo.Id, nodeInfo.PointCount);
-                    if (sectorIndex >= 0)
+                    var indices = nodeInfo.Node.PointIndices?.ToArray();
+                    if (indices != null && indices.Length > 0)
                     {
-                        // Get point data from cache
-                        var pointData = _cache.GetPointData(nodeInfo.Id);
-                        if (pointData != null && onSectorData != null)
-                        {
-                            onSectorData(sectorIndex, nodeInfo.Id, pointData);
-                        }
-                        loaded++;
-                        totalPoints += nodeInfo.PointCount;
+                        var pointData = ReadPointData(indices);
+                        _cache!.Add(nodeInfo.Id, indices, pointData);
+                        result.LoadedNodes[nodeInfo.Id] = indices;
                     }
                 }
-                else
-                {
-                    loaded++;
-                    totalPoints += nodeInfo.PointCount;
-                }
-            }
+            }, cancellationToken);
 
-            result.Version = _gpuManager.Version;
-            result.SectorActivations = _gpuManager.GetSectorActivations();
-            result.NodesLoaded = loaded;
-            result.TotalPointsLoaded = totalPoints;
+            result.Version = _cache!.Version;
             result.IsComplete = !cancellationToken.IsCancellationRequested;
         }
         catch (OperationCanceledException)
@@ -442,102 +757,154 @@ public class OctreeFlowReader : IDisposable
     }
 
     /// <summary>
-    /// Loads specified nodes to GPU synchronously.
+    /// Updates buffer with the given viewing nodes.
+    /// Loads nodes to cache if needed, then updates sector manager.
+    /// Use this after calling Traverse() separately.
     /// </summary>
-    public GpuLoadResult LoadToGpu(
-        IEnumerable<NodeInfo> nodes,
-        Action<int, string, PointData[]>? onSectorData = null)
+    /// <param name="viewingNodes">Nodes to display (from TraversalResult.ViewingNodes).</param>
+    /// <returns>Buffer update result with new sectors and active sectors.</returns>
+    public BufferUpdateResult UpdateBuffer(IEnumerable<NodeInfo> viewingNodes)
     {
         EnsureInitialized();
 
-        var sw = Stopwatch.StartNew();
-        var result = new GpuLoadResult();
-        var nodeList = nodes.ToList();
+        var nodeList = viewingNodes.ToList();
 
-        // First, ensure all nodes are in cache
-        var notInCache = nodeList.Where(n => !_cache.Contains(n.Id)).ToList();
+        // Load viewing nodes to cache (sync)
+        var notInCache = nodeList.Where(n => !_cache!.Contains(n.Id)).ToList();
+
         if (notInCache.Count > 0)
         {
             LoadToCache(notInCache);
         }
 
-        try
+        // Update sector manager - get buffer data to upload
+        return _sectorManager!.Update(nodeList);
+    }
+
+    /// <summary>
+    /// Updates buffer with the given viewing nodes asynchronously.
+    /// Loads nodes to cache if needed, then updates sector manager.
+    /// Use this after calling Traverse() separately.
+    /// </summary>
+    /// <param name="viewingNodes">Nodes to display (from TraversalResult.ViewingNodes).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Buffer update result with new sectors and active sectors.</returns>
+    public async Task<BufferUpdateResult> UpdateBufferAsync(
+        IEnumerable<NodeInfo> viewingNodes,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureInitialized();
+
+        var nodeList = viewingNodes.ToList();
+
+        // Load viewing nodes to cache (async)
+        var notInCache = nodeList.Where(n => !_cache!.Contains(n.Id)).ToList();
+
+        if (notInCache.Count > 0)
         {
-            // Release sectors for nodes no longer needed
-            var currentGpuNodes = _gpuManager.GetLoadedNodeIds().ToHashSet();
-            var neededNodes = nodeList.Select(n => n.Id).ToHashSet();
-            
-            foreach (var nodeId in currentGpuNodes)
-            {
-                if (!neededNodes.Contains(nodeId))
-                {
-                    _gpuManager.ReleaseSector(nodeId);
-                }
-            }
-
-            // Allocate sectors for new nodes
-            int loaded = 0;
-            int totalPoints = 0;
-
-            foreach (var nodeInfo in nodeList)
-            {
-                if (!_gpuManager.Contains(nodeInfo.Id))
-                {
-                    int sectorIndex = _gpuManager.AllocateSector(nodeInfo.Id, nodeInfo.PointCount);
-                    if (sectorIndex >= 0)
-                    {
-                        var pointData = _cache.GetPointData(nodeInfo.Id);
-                        if (pointData != null && onSectorData != null)
-                        {
-                            onSectorData(sectorIndex, nodeInfo.Id, pointData);
-                        }
-                        loaded++;
-                        totalPoints += nodeInfo.PointCount;
-                    }
-                }
-                else
-                {
-                    loaded++;
-                    totalPoints += nodeInfo.PointCount;
-                }
-            }
-
-            result.Version = _gpuManager.Version;
-            result.SectorActivations = _gpuManager.GetSectorActivations();
-            result.NodesLoaded = loaded;
-            result.TotalPointsLoaded = totalPoints;
-            result.IsComplete = true;
+            await LoadToCacheAsync(notInCache, cancellationToken);
         }
-        catch (Exception ex)
+
+        // Update sector manager - get buffer data to upload
+        return _sectorManager!.Update(nodeList);
+    }
+
+    /// <summary>
+    /// Performs a complete frame update: Traverse → Cache → Buffer data output.
+    /// Convenience method that combines Traverse() and UpdateBuffer().
+    /// 
+    /// IMPORTANT: Returns the SAME FrameUpdateResult object if nothing changed.
+    /// This prevents unnecessary downstream updates in vvvv gamma.
+    /// </summary>
+    /// <param name="traversalResult">Result from a previous Traverse() call.</param>
+    /// <returns>Complete frame result with buffer data to upload. Same object if unchanged.</returns>
+    public FrameUpdateResult UpdateFrame(TraversalResult traversalResult)
+    {
+        EnsureInitialized();
+
+        var sw = Stopwatch.StartNew();
+        var result = new FrameUpdateResult
         {
-            result.Error = ex.Message;
-            result.IsComplete = false;
+            Traversal = traversalResult
+        };
+
+        // Load viewing nodes to cache (sync)
+        var notInCache = traversalResult.ViewingNodes
+            .Where(n => !_cache!.Contains(n.Id))
+            .ToList();
+
+        if (notInCache.Count > 0)
+        {
+            result.CacheResult = LoadToCache(notInCache);
         }
+        else
+        {
+            result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache!.Version };
+        }
+
+        // Update sector manager - get buffer data to upload
+        result.BufferUpdate = _sectorManager!.Update(traversalResult.ViewingNodes);
 
         sw.Stop();
-        result.LoadTimeMs = sw.ElapsedMilliseconds;
+        result.TotalTimeMs = sw.ElapsedMilliseconds;
+
+        // Check if buffer state changed
+        int currentBufferVersion = result.BufferUpdate.Version;
+        
+        if (_cachedFrameUpdateResult != null && 
+            currentBufferVersion == _lastBufferVersion && 
+            !result.BufferUpdate.HasNewData)
+        {
+            // Buffer state unchanged - return the SAME object (no "Changed" trigger in vvvv)
+            return _cachedFrameUpdateResult;
+        }
+
+        // Buffer state changed - cache new result
+        _lastBufferVersion = currentBufferVersion;
+        _cachedFrameUpdateResult = result;
+
         return result;
     }
 
     /// <summary>
-    /// Performs a complete traversal and loading cycle.
-    /// Traverses the tree, loads caching nodes to RAM, and viewing nodes to GPU.
+    /// Async version of UpdateFrame.
     /// </summary>
-    public async Task<(TraversalResult traversal, CacheLoadResult cache, GpuLoadResult gpu)> TraverseAndLoadAsync(
-        TraversalDelegate traversalDelegate,
-        Action<int, string, PointData[]>? onSectorData = null,
+    /// <param name="traversalResult">Result from a previous Traverse() call.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Complete frame result with buffer data to upload.</returns>
+    public async Task<FrameUpdateResult> UpdateFrameAsync(
+        TraversalResult traversalResult,
         CancellationToken cancellationToken = default)
     {
-        // Traverse
-        var traversalResult = Traverse(traversalDelegate);
+        EnsureInitialized();
 
-        // Load to cache
-        var cacheResult = await LoadToCacheAsync(traversalResult.CachingNodes, cancellationToken);
+        var sw = Stopwatch.StartNew();
+        var result = new FrameUpdateResult
+        {
+            Traversal = traversalResult
+        };
 
-        // Load to GPU
-        var gpuResult = await LoadToGpuAsync(traversalResult.ViewingNodes, onSectorData, cancellationToken);
+        // Load viewing nodes to cache (async)
+        var notInCache = traversalResult.ViewingNodes
+            .Where(n => !_cache!.Contains(n.Id))
+            .ToList();
 
-        return (traversalResult, cacheResult, gpuResult);
+        if (notInCache.Count > 0)
+        {
+            result.CacheResult = await LoadToCacheAsync(notInCache, cancellationToken);
+        }
+        else
+        {
+            result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache!.Version };
+        }
+
+        // Update sector manager - get buffer data to upload
+        result.BufferUpdate = _sectorManager!.Update(traversalResult.ViewingNodes);
+
+        sw.Stop();
+        result.TotalTimeMs = sw.ElapsedMilliseconds;
+
+        return result;
     }
 
     /// <summary>
@@ -545,8 +912,10 @@ public class OctreeFlowReader : IDisposable
     /// </summary>
     private PointData[] ReadPointData(int[] indices)
     {
+        if (_plyIndex == null) return Array.Empty<PointData>();
+
         var result = new PointData[indices.Length];
-        
+
         // For binary PLY, we can do random access
         if (_plyIndex.Format != PlyFormat.Ascii)
         {
@@ -559,10 +928,9 @@ public class OctreeFlowReader : IDisposable
         else
         {
             // For ASCII, we need to stream (less efficient for random access)
-            // In practice, indices should be sorted for better performance
             var sortedIndices = indices.Select((idx, i) => (idx, i)).OrderBy(x => x.idx).ToArray();
             int currentIndex = 0;
-            
+
             _plyIndex.StreamVertices((vertexIndex, pos, values) =>
             {
                 while (currentIndex < sortedIndices.Length && sortedIndices[currentIndex].idx == vertexIndex)
@@ -578,10 +946,11 @@ public class OctreeFlowReader : IDisposable
 
     private PointData ConvertToPointData(float[] values)
     {
-        var point = new PointData();
+        if (_plyIndex == null) return new PointData();
 
-        // Map values to PointData based on property names
+        var point = new PointData();
         var props = _plyIndex.Properties;
+
         for (int i = 0; i < props.Count && i < values.Length; i++)
         {
             var name = props[i].Name.ToLower();
@@ -610,6 +979,10 @@ public class OctreeFlowReader : IDisposable
                 case "intensity" or "scalar_intensity":
                     point.Intensity = val > 1 ? val / 65535f : val;
                     break;
+                default:
+                    // Store as scalar
+                    point.SetScalar(name, val);
+                    break;
             }
         }
 
@@ -622,94 +995,17 @@ public class OctreeFlowReader : IDisposable
             throw new InvalidOperationException("Reader not initialized. Call Initialize() first.");
     }
 
-    /// <summary>
-    /// Simple one-call update: Traverse → Cache → GPU.
-    /// Just pass your traversal logic and get back everything you need for rendering.
-    /// </summary>
-    /// <param name="traversalDelegate">Your traversal logic.</param>
-    /// <returns>Complete frame result with GPU uploads ready.</returns>
-    public FrameUpdateResult UpdateFrame(TraversalDelegate traversalDelegate)
-    {
-        EnsureInitialized();
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = new FrameUpdateResult();
-
-        // 1. Traverse
-        result.Traversal = Traverse(traversalDelegate);
-
-        // 2. Load viewing nodes to cache (sync - for simplicity)
-        var notInCache = result.Traversal.ViewingNodes
-            .Where(n => !_cache.Contains(n.Id))
-            .ToList();
-        
-        if (notInCache.Count > 0)
-        {
-            result.CacheResult = LoadToCache(notInCache);
-        }
-        else
-        {
-            result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache.Version };
-        }
-
-        // 3. Update GPU (auto-managed)
-        result.GpuUpdate = _gpuLoader.Update(result.Traversal.ViewingNodes);
-
-        sw.Stop();
-        result.TotalTimeMs = sw.ElapsedMilliseconds;
-
-        return result;
-    }
-
-    /// <summary>
-    /// Async version of UpdateFrame.
-    /// </summary>
-    public async Task<FrameUpdateResult> UpdateFrameAsync(
-        TraversalDelegate traversalDelegate,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureInitialized();
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = new FrameUpdateResult();
-
-        // 1. Traverse
-        result.Traversal = Traverse(traversalDelegate);
-
-        // 2. Load viewing nodes to cache (async)
-        var notInCache = result.Traversal.ViewingNodes
-            .Where(n => !_cache.Contains(n.Id))
-            .ToList();
-        
-        if (notInCache.Count > 0)
-        {
-            result.CacheResult = await LoadToCacheAsync(notInCache, cancellationToken);
-        }
-        else
-        {
-            result.CacheResult = new CacheLoadResult { IsComplete = true, Version = _cache.Version };
-        }
-
-        // 3. Update GPU (auto-managed)
-        result.GpuUpdate = _gpuLoader.Update(result.Traversal.ViewingNodes);
-
-        sw.Stop();
-        result.TotalTimeMs = sw.ElapsedMilliseconds;
-
-        return result;
-    }
-
     public void Dispose()
     {
-        _cache.Dispose();
-        _gpuManager.Dispose();
-        _gpuLoader.Dispose();
-        _plyIndex.Dispose();
+        _cache?.Dispose();
+        _sectorManager?.Dispose();
+        _plyIndex?.Dispose();
     }
 }
 
 /// <summary>
 /// Complete result of a frame update.
+/// Contains traversal info, cache status, and buffer data to upload.
 /// </summary>
 public class FrameUpdateResult
 {
@@ -724,9 +1020,9 @@ public class FrameUpdateResult
     public CacheLoadResult CacheResult { get; set; } = new();
 
     /// <summary>
-    /// GPU update result with uploads ready.
+    /// Buffer update result with data to upload.
     /// </summary>
-    public GpuUpdateResult GpuUpdate { get; set; } = new();
+    public BufferUpdateResult BufferUpdate { get; set; } = new();
 
     /// <summary>
     /// Total time for the entire update.
@@ -734,18 +1030,25 @@ public class FrameUpdateResult
     public long TotalTimeMs { get; set; }
 
     /// <summary>
-    /// Quick access to pending GPU uploads.
+    /// Quick access to new sector data to upload.
+    /// Mutable list of sectors, each containing a Features dictionary.
+    /// Upload these to your DynamicBufferAdvanced buffers.
     /// </summary>
-    public SectorUpload[] Uploads => GpuUpdate.Uploads;
+    public List<SectorData> NewSectors => BufferUpdate.NewSectors;
 
     /// <summary>
     /// Quick access to active sectors for rendering.
+    /// Use this for your rendering dispatch.
     /// </summary>
-    public SectorState[] ActiveSectors => GpuUpdate.ActiveSectors;
+    public SectorInfo[] ActiveSectors => BufferUpdate.ActiveSectors;
 
     /// <summary>
     /// Total points ready for rendering.
     /// </summary>
-    public int TotalPointsOnGpu => GpuUpdate.TotalPointsOnGpu;
-}
+    public int TotalPointsInBuffer => BufferUpdate.TotalPointsInBuffer;
 
+    /// <summary>
+    /// Whether there's new data to upload this frame.
+    /// </summary>
+    public bool HasNewData => BufferUpdate.HasNewData;
+}

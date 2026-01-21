@@ -4,26 +4,41 @@ using System.Collections.Concurrent;
 namespace OctreeFlow.Api;
 
 /// <summary>
-/// Automatic GPU buffer manager that handles loading/unloading of nodes.
-/// Just throw a list of nodes at it each frame and it manages what to upload.
-/// Uses LRU eviction when buffer is full, prioritizes by node level.
+/// Manages buffer sectors for point cloud data.
+/// Handles sector allocation with LRU eviction.
+/// Outputs data ready for vvvv gamma's DynamicBufferAdvanced.
+/// 
+/// Usage:
+/// 1. Create with configuration
+/// 2. Call Update() each frame with desired nodes
+/// 3. Use the result to upload new sectors to your buffers
+/// 4. Use ActiveSectors for rendering dispatch
 /// </summary>
-public class GpuLoader : IDisposable
+public class SectorManager : IDisposable
 {
     private readonly CacheManager _cache;
-    private readonly int _maxSectors;
-    private readonly int _sectorSizePoints;
-    private readonly int _bytesPerPoint;
+    private readonly BufferConfiguration _config;
 
     // Sector state
-    private readonly GpuLoaderSector[] _sectors;
+    private readonly Sector[] _sectors;
     private readonly Dictionary<string, int> _nodeToSector = new();
     private readonly LinkedList<string> _lruList = new();
     private readonly object _lock = new();
+    
+    // Mutable output list for NewSectors
+    private readonly List<SectorData> _newSectorsList = new();
+    
+    // Store SectorData for ALL active sectors (keyed by sector index)
+    // This allows GetCombinedAllActiveData() to work correctly
+    private readonly Dictionary<int, SectorData> _activeSectorData = new();
 
-    // Change tracking for this frame
-    private readonly List<SectorUpload> _pendingUploads = new();
+    // Change tracking
+    private readonly List<SectorData> _pendingUploads = new();
     private readonly List<int> _releasedSectors = new();
+
+    // Available features (determined from PLY file)
+    private readonly HashSet<string> _availableVector4Features = new();
+    private readonly HashSet<string> _availableFloat32Features = new();
 
     private int _version;
     private int _frameVersion;
@@ -34,19 +49,19 @@ public class GpuLoader : IDisposable
     public int Version => _version;
 
     /// <summary>
+    /// Buffer configuration.
+    /// </summary>
+    public BufferConfiguration Configuration => _config;
+
+    /// <summary>
     /// Number of sectors.
     /// </summary>
-    public int SectorCount => _maxSectors;
+    public int SectorCount => _config.SectorCount;
 
     /// <summary>
     /// Points per sector.
     /// </summary>
-    public int SectorSizePoints => _sectorSizePoints;
-
-    /// <summary>
-    /// Bytes per point.
-    /// </summary>
-    public int BytesPerPoint => _bytesPerPoint;
+    public int MaxPointsPerSector => _config.MaxPointsPerSector;
 
     /// <summary>
     /// Number of active sectors.
@@ -63,9 +78,9 @@ public class GpuLoader : IDisposable
     }
 
     /// <summary>
-    /// Total points currently on GPU.
+    /// Total points currently in buffer.
     /// </summary>
-    public int TotalPointsOnGpu
+    public int TotalPointsInBuffer
     {
         get
         {
@@ -77,56 +92,80 @@ public class GpuLoader : IDisposable
     }
 
     /// <summary>
-    /// Creates a GPU loader.
+    /// Creates a sector manager.
     /// </summary>
     /// <param name="cache">RAM cache to read point data from.</param>
-    /// <param name="maxBufferSizeMB">Maximum GPU buffer size in MB.</param>
-    /// <param name="maxPointsPerNode">Maximum points per node (sector size).</param>
-    /// <param name="bytesPerPoint">Bytes per point (default 44 for pos+color+normal+intensity).</param>
-    public GpuLoader(CacheManager cache, int maxBufferSizeMB, int maxPointsPerNode, int bytesPerPoint = 44)
+    /// <param name="config">Buffer configuration.</param>
+    public SectorManager(CacheManager cache, BufferConfiguration config)
     {
         _cache = cache;
-        _sectorSizePoints = maxPointsPerNode;
-        _bytesPerPoint = bytesPerPoint;
+        _config = config;
 
-        int sectorSizeBytes = _sectorSizePoints * _bytesPerPoint;
-        _maxSectors = (maxBufferSizeMB * 1024 * 1024) / sectorSizeBytes;
-        if (_maxSectors < 1) _maxSectors = 1;
-
-        _sectors = new GpuLoaderSector[_maxSectors];
-        for (int i = 0; i < _maxSectors; i++)
+        _sectors = new Sector[config.SectorCount];
+        for (int i = 0; i < config.SectorCount; i++)
         {
-            _sectors[i] = new GpuLoaderSector
+            _sectors[i] = new Sector
             {
                 Index = i,
-                ByteOffset = i * sectorSizeBytes,
+                ByteOffsetVector4 = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerVector4,
+                ByteOffsetFloat = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerFloat,
                 IsActive = false
             };
         }
     }
 
     /// <summary>
-    /// Updates the GPU state to match the desired node list.
-    /// Call this each frame with the nodes you want visible.
-    /// Returns what needs to be uploaded/released.
+    /// Creates a sector manager with default configuration.
     /// </summary>
-    /// <param name="desiredNodes">Nodes that should be on GPU (in priority order - first = highest).</param>
-    /// <returns>Update result with uploads needed and sectors released.</returns>
-    public GpuUpdateResult Update(IEnumerable<NodeInfo> desiredNodes)
+    /// <param name="cache">RAM cache to read point data from.</param>
+    /// <param name="bufferSizeBytes">Buffer size in bytes.</param>
+    /// <param name="maxPointsPerSector">Maximum points per sector.</param>
+    public SectorManager(CacheManager cache, long bufferSizeBytes, int maxPointsPerSector = 65536)
+        : this(cache, BufferConfiguration.FromBufferSize(bufferSizeBytes, maxPointsPerSector))
+    {
+    }
+
+    /// <summary>
+    /// Sets the available features based on what's in the PLY file.
+    /// Call this after initialization with the feature names from OctreeFlowReader.
+    /// </summary>
+    /// <param name="vector4Features">Names of available Vector4 features (e.g., "Position", "Colors", "Normals").</param>
+    /// <param name="float32Features">Names of available Float32 features (e.g., "Intensity", scalar names).</param>
+    public void SetAvailableFeatures(IEnumerable<string> vector4Features, IEnumerable<string> float32Features)
+    {
+        _availableVector4Features.Clear();
+        _availableFloat32Features.Clear();
+        
+        foreach (var f in vector4Features)
+            _availableVector4Features.Add(f);
+        
+        foreach (var f in float32Features)
+            _availableFloat32Features.Add(f);
+    }
+
+    /// <summary>
+    /// Updates the buffer state to match the desired node list.
+    /// Call this each frame with the nodes you want in the buffer.
+    /// Returns data to upload and current sector states.
+    /// </summary>
+    /// <param name="desiredNodes">Nodes that should be in buffer (in priority order - first = highest priority).</param>
+    /// <returns>Update result with new sectors to upload and active sector info.</returns>
+    public BufferUpdateResult Update(IEnumerable<NodeInfo> desiredNodes)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = new GpuUpdateResult();
+        var result = new BufferUpdateResult();
 
         lock (_lock)
         {
             _pendingUploads.Clear();
             _releasedSectors.Clear();
+            _newSectorsList.Clear();
             _frameVersion++;
 
             var desiredSet = new HashSet<string>();
             var orderedNodes = desiredNodes.ToList();
 
-            // Mark desired nodes
+            // Build desired set
             foreach (var node in orderedNodes)
             {
                 desiredSet.Add(node.Id);
@@ -155,10 +194,11 @@ public class GpuLoader : IDisposable
                 else
                 {
                     // Try to load
-                    var upload = TryLoadNode(node);
-                    if (upload != null)
+                    var sectorData = TryLoadNode(node);
+                    if (sectorData != null)
                     {
-                        _pendingUploads.Add(upload);
+                        _pendingUploads.Add(sectorData);
+                        _newSectorsList.Add(sectorData);
                         result.NodesLoaded++;
                     }
                     else
@@ -168,15 +208,16 @@ public class GpuLoader : IDisposable
                 }
             }
 
-            result.Uploads = _pendingUploads.ToArray();
+            result.NewSectors = _newSectorsList;
+            result.AllActiveSectors = _activeSectorData.Values.ToList();
             result.ReleasedSectors = _releasedSectors.ToArray();
             result.ActiveSectors = GetActiveSectorsInternal();
             result.Version = _version;
+            result.TotalPointsInBuffer = _sectors.Where(s => s.IsActive).Sum(s => s.PointCount);
         }
 
         sw.Stop();
         result.UpdateTimeMs = sw.ElapsedMilliseconds;
-        result.TotalPointsOnGpu = TotalPointsOnGpu;
 
         return result;
     }
@@ -184,14 +225,24 @@ public class GpuLoader : IDisposable
     /// <summary>
     /// Tries to load a node. Evicts LRU if needed.
     /// </summary>
-    private SectorUpload? TryLoadNode(NodeInfo node)
+    private SectorData? TryLoadNode(NodeInfo node)
     {
         // Check if in cache
         var pointData = _cache.GetPointData(node.Id);
         if (pointData == null)
         {
-            // Not in cache - can't load to GPU
+            // Not in cache - can't load
             return null;
+        }
+
+        // Truncate if node has more points than sector can hold
+        int pointCount = Math.Min(pointData.Length, _config.MaxPointsPerSector);
+        if (pointData.Length > _config.MaxPointsPerSector)
+        {
+            // Create truncated copy
+            var truncated = new PointData[pointCount];
+            Array.Copy(pointData, truncated, pointCount);
+            pointData = truncated;
         }
 
         // Find or make a sector
@@ -204,7 +255,7 @@ public class GpuLoader : IDisposable
 
         if (sectorIndex < 0)
         {
-            // No space and nothing to evict (shouldn't happen normally)
+            // No space and nothing to evict
             return null;
         }
 
@@ -212,7 +263,7 @@ public class GpuLoader : IDisposable
         var sector = _sectors[sectorIndex];
         sector.IsActive = true;
         sector.NodeId = node.Id;
-        sector.PointCount = pointData.Length;
+        sector.PointCount = pointCount;
         sector.Level = node.Level;
         sector.FrameLoaded = _frameVersion;
 
@@ -220,17 +271,21 @@ public class GpuLoader : IDisposable
         AddToLru(node.Id);
         _version++;
 
-        // Create upload data
-        return new SectorUpload
-        {
-            SectorIndex = sectorIndex,
-            ByteOffset = sector.ByteOffset,
-            NodeId = node.Id,
-            PointCount = pointData.Length,
-            PointData = pointData,
-            GpuData = GpuPointData.FromPointDataArray(pointData),
-            RawBytes = GpuPointData.ToByteArray(pointData)
-        };
+        // Create sector data for upload
+        var sectorData = SectorData.FromPointData(
+            sectorIndex,
+            sector.ByteOffsetVector4,
+            sector.ByteOffsetFloat,
+            node.Id,
+            node.Level,
+            pointData,
+            _availableVector4Features,
+            _availableFloat32Features);
+        
+        // Store in active sector data for GetCombinedAllActiveData()
+        _activeSectorData[sectorIndex] = sectorData;
+        
+        return sectorData;
     }
 
     private int FindEmptySector()
@@ -273,6 +328,7 @@ public class GpuLoader : IDisposable
             _nodeToSector.Remove(nodeId);
             RemoveFromLru(nodeId);
             _releasedSectors.Add(sectorIndex);
+            _activeSectorData.Remove(sectorIndex); // Remove stored sector data
             _version++;
         }
     }
@@ -297,23 +353,25 @@ public class GpuLoader : IDisposable
         _lruList.Remove(nodeId);
     }
 
-    private SectorState[] GetActiveSectorsInternal()
+    private SectorInfo[] GetActiveSectorsInternal()
     {
         return _sectors
             .Where(s => s.IsActive)
-            .Select(s => new SectorState
+            .Select(s => new SectorInfo
             {
                 SectorIndex = s.Index,
-                ByteOffset = s.ByteOffset,
-                NodeId = s.NodeId!,
+                ByteOffsetVector4 = s.ByteOffsetVector4,
+                ByteOffsetFloat = s.ByteOffsetFloat,
+                StartIndex = s.Index * _config.MaxPointsPerSector,
                 PointCount = s.PointCount,
+                NodeId = s.NodeId!,
                 Level = s.Level
             })
             .ToArray();
     }
 
     /// <summary>
-    /// Checks if a node is currently on GPU.
+    /// Checks if a node is currently in buffer.
     /// </summary>
     public bool Contains(string nodeId)
     {
@@ -346,6 +404,33 @@ public class GpuLoader : IDisposable
     }
 
     /// <summary>
+    /// Gets info about a specific sector.
+    /// </summary>
+    public SectorInfo? GetSectorInfo(int sectorIndex)
+    {
+        lock (_lock)
+        {
+            if (sectorIndex < 0 || sectorIndex >= _sectors.Length)
+                return null;
+
+            var s = _sectors[sectorIndex];
+            if (!s.IsActive)
+                return null;
+
+            return new SectorInfo
+            {
+                SectorIndex = s.Index,
+                ByteOffsetVector4 = s.ByteOffsetVector4,
+                ByteOffsetFloat = s.ByteOffsetFloat,
+                StartIndex = s.Index * _config.MaxPointsPerSector,
+                PointCount = s.PointCount,
+                NodeId = s.NodeId!,
+                Level = s.Level
+            };
+        }
+    }
+
+    /// <summary>
     /// Clears all sectors.
     /// </summary>
     public void Clear()
@@ -360,7 +445,20 @@ public class GpuLoader : IDisposable
             }
             _nodeToSector.Clear();
             _lruList.Clear();
+            _activeSectorData.Clear();
             _version++;
+        }
+    }
+
+    /// <summary>
+    /// Gets all active sector data as a list.
+    /// Use this for GetCombinedAllActiveData() operations.
+    /// </summary>
+    internal List<SectorData> GetAllActiveSectorData()
+    {
+        lock (_lock)
+        {
+            return _activeSectorData.Values.ToList();
         }
     }
 
@@ -369,10 +467,11 @@ public class GpuLoader : IDisposable
         Clear();
     }
 
-    private class GpuLoaderSector
+    private class Sector
     {
         public int Index;
-        public int ByteOffset;
+        public int ByteOffsetVector4;
+        public int ByteOffsetFloat;
         public bool IsActive;
         public string? NodeId;
         public int PointCount;
@@ -380,137 +479,3 @@ public class GpuLoader : IDisposable
         public int FrameLoaded;
     }
 }
-
-/// <summary>
-/// Result of a GPU update operation.
-/// </summary>
-public class GpuUpdateResult
-{
-    /// <summary>
-    /// Version number.
-    /// </summary>
-    public int Version { get; set; }
-
-    /// <summary>
-    /// Time taken in milliseconds.
-    /// </summary>
-    public long UpdateTimeMs { get; set; }
-
-    /// <summary>
-    /// Sectors that need data uploaded.
-    /// </summary>
-    public SectorUpload[] Uploads { get; set; } = Array.Empty<SectorUpload>();
-
-    /// <summary>
-    /// Sector indices that were released (can be cleared if needed).
-    /// </summary>
-    public int[] ReleasedSectors { get; set; } = Array.Empty<int>();
-
-    /// <summary>
-    /// Current active sectors after update.
-    /// </summary>
-    public SectorState[] ActiveSectors { get; set; } = Array.Empty<SectorState>();
-
-    /// <summary>
-    /// Number of nodes newly loaded.
-    /// </summary>
-    public int NodesLoaded { get; set; }
-
-    /// <summary>
-    /// Number of nodes already on GPU.
-    /// </summary>
-    public int NodesAlreadyLoaded { get; set; }
-
-    /// <summary>
-    /// Number of nodes released.
-    /// </summary>
-    public int NodesReleased { get; set; }
-
-    /// <summary>
-    /// Number of nodes skipped (not in cache or no space).
-    /// </summary>
-    public int NodesSkipped { get; set; }
-
-    /// <summary>
-    /// Total points currently on GPU.
-    /// </summary>
-    public int TotalPointsOnGpu { get; set; }
-
-    /// <summary>
-    /// True if there are uploads pending.
-    /// </summary>
-    public bool HasUploads => Uploads.Length > 0;
-}
-
-/// <summary>
-/// Data for uploading to a GPU sector.
-/// </summary>
-public class SectorUpload
-{
-    /// <summary>
-    /// Sector index.
-    /// </summary>
-    public int SectorIndex { get; set; }
-
-    /// <summary>
-    /// Byte offset in GPU buffer.
-    /// </summary>
-    public int ByteOffset { get; set; }
-
-    /// <summary>
-    /// Node ID being uploaded.
-    /// </summary>
-    public string NodeId { get; set; } = "";
-
-    /// <summary>
-    /// Number of points.
-    /// </summary>
-    public int PointCount { get; set; }
-
-    /// <summary>
-    /// Original point data.
-    /// </summary>
-    public PointData[] PointData { get; set; } = Array.Empty<PointData>();
-
-    /// <summary>
-    /// GPU-formatted point data.
-    /// </summary>
-    public GpuPointData[] GpuData { get; set; } = Array.Empty<GpuPointData>();
-
-    /// <summary>
-    /// Raw bytes ready for GPU upload.
-    /// </summary>
-    public byte[] RawBytes { get; set; } = Array.Empty<byte>();
-}
-
-/// <summary>
-/// State of an active sector.
-/// </summary>
-public struct SectorState
-{
-    /// <summary>
-    /// Sector index.
-    /// </summary>
-    public int SectorIndex { get; set; }
-
-    /// <summary>
-    /// Byte offset in buffer.
-    /// </summary>
-    public int ByteOffset { get; set; }
-
-    /// <summary>
-    /// Node ID in this sector.
-    /// </summary>
-    public string NodeId { get; set; }
-
-    /// <summary>
-    /// Number of points.
-    /// </summary>
-    public int PointCount { get; set; }
-
-    /// <summary>
-    /// Node level in octree.
-    /// </summary>
-    public int Level { get; set; }
-}
-
