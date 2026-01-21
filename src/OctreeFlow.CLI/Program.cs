@@ -667,15 +667,11 @@ class Program
                 Console.WriteLine($"  ByteOffsetVector4: {firstSector.ByteOffsetVector4}");
                 Console.WriteLine($"  ByteOffsetFloat32: {firstSector.ByteOffsetFloat32}");
                 Console.WriteLine($"  Vector4 Features:");
-                if (firstSector.HasPosition)
-                    Console.WriteLine($"    Position: {firstSector.PositionData!.Length} elements");
-                if (firstSector.HasColors)
-                    Console.WriteLine($"    Colors: {firstSector.ColorsData!.Length} elements");
-                if (firstSector.HasNormals)
-                    Console.WriteLine($"    Normals: {firstSector.NormalsData!.Length} elements");
+                foreach (var feature in firstSector.VectorFeatures)
+                {
+                    Console.WriteLine($"    {feature.Key}: {feature.Value.Length} elements");
+                }
                 Console.WriteLine($"  Float32 Features:");
-                if (firstSector.HasIntensity)
-                    Console.WriteLine($"    Intensity: {firstSector.IntensityData!.Length} elements");
                 foreach (var feature in firstSector.ScalarFeatures)
                 {
                     Console.WriteLine($"    {feature.Key}: {feature.Value.Length} elements");

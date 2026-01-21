@@ -54,56 +54,45 @@ public class SectorData
     /// </summary>
     public int ElementOffsetFloat32 => ByteOffsetFloat32 / 4;
 
-    // Direct feature arrays (null if not available in source)
-    /// <summary>
-    /// Position data as Vector4 array. Null if not available.
-    /// </summary>
-    public Vector4[]? PositionData { get; set; }
+    // Internal storage for Vector4 features (Position, Colors, Normals)
+    private Dictionary<string, Vector4[]> _vectorFeatures = new();
 
-    /// <summary>
-    /// Color data as Vector4 array. Null if not available.
-    /// </summary>
-    public Vector4[]? ColorsData { get; set; }
-
-    /// <summary>
-    /// Normal data as Vector4 array. Null if not available.
-    /// </summary>
-    public Vector4[]? NormalsData { get; set; }
-
-    /// <summary>
-    /// Intensity data as float array. Null if not available.
-    /// </summary>
-    public float[]? IntensityData { get; set; }
-
-    /// <summary>
-    /// Whether this sector has position data.
-    /// </summary>
-    public bool HasPosition => PositionData != null;
-
-    /// <summary>
-    /// Whether this sector has color data.
-    /// </summary>
-    public bool HasColors => ColorsData != null;
-
-    /// <summary>
-    /// Whether this sector has normal data.
-    /// </summary>
-    public bool HasNormals => NormalsData != null;
-
-    /// <summary>
-    /// Whether this sector has intensity data.
-    /// </summary>
-    public bool HasIntensity => IntensityData != null;
-
-    // Internal storage for additional scalar features
+    // Internal storage for scalar features (Intensity and custom scalars)
     private Dictionary<string, float[]> _scalarFeatures = new();
 
     /// <summary>
-    /// Additional scalar feature data as sequence of key-value pairs.
-    /// Keys are scalar property names from the PLY file.
+    /// Vector4 feature data as sequence of key-value pairs.
+    /// Keys: "Position", "Colors", "Normals".
+    /// Values: Vector4[] arrays ready for upload to GPU buffers.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, Vector4[]>> VectorFeatures => _vectorFeatures;
+
+    /// <summary>
+    /// Scalar feature data as sequence of key-value pairs.
+    /// Keys are scalar property names from the PLY file (e.g., "Intensity", custom scalars).
     /// Values: float[] arrays ready for upload to GPU buffers.
     /// </summary>
     public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
+
+    /// <summary>
+    /// Checks if this sector has data for a specific Vector4 feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>True if the vector data is available.</returns>
+    public bool HasVectorData(string name) => _vectorFeatures.ContainsKey(name);
+
+    /// <summary>
+    /// Gets the data for a specific Vector4 feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>The Vector4 array, or null if not available.</returns>
+    public Vector4[]? GetVectorData(string name) => 
+        _vectorFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available Vector4 features in this sector.
+    /// </summary>
+    public IEnumerable<string> VectorFeatureNames => _vectorFeatures.Keys;
 
     /// <summary>
     /// Checks if this sector has data for a specific scalar feature.
@@ -124,6 +113,22 @@ public class SectorData
     /// Gets the names of all available scalar features in this sector.
     /// </summary>
     public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
+
+    /// <summary>
+    /// Internal: Sets vector data (used by FromPointData).
+    /// </summary>
+    internal void SetVectorData(string name, Vector4[] data)
+    {
+        _vectorFeatures[name] = data;
+    }
+
+    /// <summary>
+    /// Internal: Sets scalar data (used by FromPointData).
+    /// </summary>
+    internal void SetScalarData(string name, float[] data)
+    {
+        _scalarFeatures[name] = data;
+    }
 
     /// <summary>
     /// Creates SectorData from PointData array.
@@ -156,24 +161,16 @@ public class SectorData
             ByteOffsetFloat32 = byteOffsetFloat
         };
 
-        // Create arrays only for available features
-        bool hasPosition = availableVector4Features.Contains("Position");
-        bool hasColors = availableVector4Features.Contains("Colors");
-        bool hasNormals = availableVector4Features.Contains("Normals");
-        bool hasIntensity = availableFloat32Features.Contains("Intensity");
+        // Create arrays only for available Vector4 features
+        foreach (var vectorName in availableVector4Features)
+        {
+            result._vectorFeatures[vectorName] = new Vector4[points.Length];
+        }
 
-        if (hasPosition) result.PositionData = new Vector4[points.Length];
-        if (hasColors) result.ColorsData = new Vector4[points.Length];
-        if (hasNormals) result.NormalsData = new Vector4[points.Length];
-        if (hasIntensity) result.IntensityData = new float[points.Length];
-
-        // Initialize scalar arrays only for available scalars
+        // Create arrays only for available scalar features
         foreach (var scalarName in availableFloat32Features)
         {
-            if (scalarName != "Intensity") // Intensity is handled separately
-            {
-                result._scalarFeatures[scalarName] = new float[points.Length];
-            }
+            result._scalarFeatures[scalarName] = new float[points.Length];
         }
 
         // Convert point data
@@ -181,19 +178,19 @@ public class SectorData
         {
             var pt = points[i];
             
-            if (result.PositionData != null)
-                result.PositionData[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
+            if (result._vectorFeatures.TryGetValue("Position", out var posArr))
+                posArr[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
             
-            if (result.ColorsData != null)
-                result.ColorsData[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
+            if (result._vectorFeatures.TryGetValue("Colors", out var colArr))
+                colArr[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
             
-            if (result.NormalsData != null)
-                result.NormalsData[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
+            if (result._vectorFeatures.TryGetValue("Normals", out var normArr))
+                normArr[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
             
-            if (result.IntensityData != null)
-                result.IntensityData[i] = pt.Intensity;
+            if (result._scalarFeatures.TryGetValue("Intensity", out var intArr))
+                intArr[i] = pt.Intensity;
 
-            // Copy scalars
+            // Copy scalars from PointData
             if (pt.Scalars != null)
             {
                 foreach (var kvp in pt.Scalars)
@@ -257,25 +254,8 @@ public struct SectorInfo
 /// </summary>
 public class CombinedBufferData
 {
-    /// <summary>
-    /// Combined position data from all sectors (contiguous at offset 0).
-    /// </summary>
-    public Vector4[]? PositionData { get; set; }
-
-    /// <summary>
-    /// Combined color data from all sectors (contiguous at offset 0).
-    /// </summary>
-    public Vector4[]? ColorsData { get; set; }
-
-    /// <summary>
-    /// Combined normal data from all sectors (contiguous at offset 0).
-    /// </summary>
-    public Vector4[]? NormalsData { get; set; }
-
-    /// <summary>
-    /// Combined intensity data from all sectors (contiguous at offset 0).
-    /// </summary>
-    public float[]? IntensityData { get; set; }
+    // Internal storage for combined Vector4 features
+    private Dictionary<string, Vector4[]> _vectorFeatures = new();
 
     // Internal storage for combined scalar features
     private Dictionary<string, float[]> _scalarFeatures = new();
@@ -286,31 +266,38 @@ public class CombinedBufferData
     public int TotalPointCount { get; set; }
 
     /// <summary>
-    /// Whether there is position data.
+    /// Combined Vector4 feature data as sequence of key-value pairs.
+    /// Keys: "Position", "Colors", "Normals".
+    /// Values: Vector4[] arrays ready for upload to GPU buffers.
     /// </summary>
-    public bool HasPosition => PositionData != null && TotalPointCount > 0;
-
-    /// <summary>
-    /// Whether there is color data.
-    /// </summary>
-    public bool HasColors => ColorsData != null && TotalPointCount > 0;
-
-    /// <summary>
-    /// Whether there is normal data.
-    /// </summary>
-    public bool HasNormals => NormalsData != null && TotalPointCount > 0;
-
-    /// <summary>
-    /// Whether there is intensity data.
-    /// </summary>
-    public bool HasIntensity => IntensityData != null && TotalPointCount > 0;
+    public IEnumerable<KeyValuePair<string, Vector4[]>> VectorFeatures => _vectorFeatures;
 
     /// <summary>
     /// Combined scalar feature data as sequence of key-value pairs.
-    /// Keys are scalar property names from the PLY file.
+    /// Keys are scalar property names from the PLY file (e.g., "Intensity", custom scalars).
     /// Values: float[] arrays ready for upload to GPU buffers.
     /// </summary>
     public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
+
+    /// <summary>
+    /// Checks if this combined data has a specific Vector4 feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>True if the vector data is available.</returns>
+    public bool HasVectorData(string name) => _vectorFeatures.ContainsKey(name) && TotalPointCount > 0;
+
+    /// <summary>
+    /// Gets the combined data for a specific Vector4 feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>The Vector4 array, or null if not available.</returns>
+    public Vector4[]? GetVectorData(string name) => 
+        _vectorFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available Vector4 features.
+    /// </summary>
+    public IEnumerable<string> VectorFeatureNames => _vectorFeatures.Keys;
 
     /// <summary>
     /// Checks if this combined data has a specific scalar feature.
@@ -331,6 +318,14 @@ public class CombinedBufferData
     /// Gets the names of all available scalar features.
     /// </summary>
     public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
+
+    /// <summary>
+    /// Internal: Sets vector data (used by CombineAllSectorData).
+    /// </summary>
+    internal void SetVectorData(string name, Vector4[] data)
+    {
+        _vectorFeatures[name] = data;
+    }
 
     /// <summary>
     /// Internal: Sets scalar data (used by CombineAllSectorData).
@@ -450,11 +445,15 @@ public class BufferUpdateResult
 
         if (totalPoints == 0) return result;
 
-        // Check what data is available
-        bool hasPosition = sectors.Any(s => s.HasPosition);
-        bool hasColors = sectors.Any(s => s.HasColors);
-        bool hasNormals = sectors.Any(s => s.HasNormals);
-        bool hasIntensity = sectors.Any(s => s.HasIntensity);
+        // Collect all Vector4 feature names from all sectors
+        var vectorNames = new HashSet<string>();
+        foreach (var sector in sectors)
+        {
+            foreach (var name in sector.VectorFeatureNames)
+            {
+                vectorNames.Add(name);
+            }
+        }
 
         // Collect all scalar feature names from all sectors
         var scalarNames = new HashSet<string>();
@@ -466,13 +465,14 @@ public class BufferUpdateResult
             }
         }
 
-        // Allocate combined arrays
-        if (hasPosition) result.PositionData = new Vector4[totalPoints];
-        if (hasColors) result.ColorsData = new Vector4[totalPoints];
-        if (hasNormals) result.NormalsData = new Vector4[totalPoints];
-        if (hasIntensity) result.IntensityData = new float[totalPoints];
+        // Allocate combined Vector4 arrays
+        var vectorArrays = new Dictionary<string, Vector4[]>();
+        foreach (var name in vectorNames)
+        {
+            vectorArrays[name] = new Vector4[totalPoints];
+        }
 
-        // Allocate scalar arrays
+        // Allocate combined scalar arrays
         var scalarArrays = new Dictionary<string, float[]>();
         foreach (var name in scalarNames)
         {
@@ -485,17 +485,16 @@ public class BufferUpdateResult
         {
             int count = sector.PointCount;
 
-            if (hasPosition && sector.PositionData != null)
-                Array.Copy(sector.PositionData, 0, result.PositionData!, offset, count);
-
-            if (hasColors && sector.ColorsData != null)
-                Array.Copy(sector.ColorsData, 0, result.ColorsData!, offset, count);
-
-            if (hasNormals && sector.NormalsData != null)
-                Array.Copy(sector.NormalsData, 0, result.NormalsData!, offset, count);
-
-            if (hasIntensity && sector.IntensityData != null)
-                Array.Copy(sector.IntensityData, 0, result.IntensityData!, offset, count);
+            // Copy Vector4 data
+            foreach (var name in vectorNames)
+            {
+                var sectorVector = sector.GetVectorData(name);
+                if (sectorVector != null)
+                {
+                    Array.Copy(sectorVector, 0, vectorArrays[name], offset, count);
+                }
+                // If sector doesn't have this vector, the array remains zeroed
+            }
 
             // Copy scalar data
             foreach (var name in scalarNames)
@@ -509,6 +508,12 @@ public class BufferUpdateResult
             }
 
             offset += count;
+        }
+
+        // Add Vector4 arrays to result
+        foreach (var kvp in vectorArrays)
+        {
+            result.SetVectorData(kvp.Key, kvp.Value);
         }
 
         // Add scalar arrays to result
