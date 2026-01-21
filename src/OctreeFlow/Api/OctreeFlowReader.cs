@@ -143,6 +143,71 @@ public class OctreeFlowReader : IDisposable
     public IEnumerable<KeyValuePair<string, float[]>> FeaturesFloat32 => 
         _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>();
 
+    /// <summary>
+    /// Checks if a Vector4 feature exists (Position, Colors, Normals).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>True if the feature is available.</returns>
+    public bool HasFeatureVector4(string name) => _featuresVector4?.ContainsKey(name) ?? false;
+
+    /// <summary>
+    /// Checks if a Float32 feature exists (Intensity or any scalar).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Intensity" or scalar property name).</param>
+    /// <returns>True if the feature is available.</returns>
+    public bool HasFeatureFloat32(string name) => _featuresFloat32?.ContainsKey(name) ?? false;
+
+    /// <summary>
+    /// Checks if a scalar feature exists by name.
+    /// This checks the Float32 features excluding Intensity.
+    /// </summary>
+    /// <param name="name">Scalar property name from the PLY file.</param>
+    /// <returns>True if the scalar feature is available.</returns>
+    public bool HasScalarFeature(string name)
+    {
+        if (_featuresFloat32 == null) return false;
+        // Check if it exists and is not "Intensity" (which is a standard feature)
+        return name != "Intensity" && _featuresFloat32.ContainsKey(name);
+    }
+
+    /// <summary>
+    /// Gets the names of all available scalar features (excluding standard features like Intensity).
+    /// </summary>
+    public IEnumerable<string> ScalarFeatureNames => 
+        _featuresFloat32?.Keys.Where(k => k != "Intensity") ?? Enumerable.Empty<string>();
+
+    /// <summary>
+    /// Gets the buffer array for a specific Vector4 feature.
+    /// Use this to get the correctly-sized array for a specific feature.
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
+    /// <returns>The Vector4 array, or null if not available.</returns>
+    public Vector4[]? GetFeatureVector4(string name)
+    {
+        if (_featuresVector4 == null) return null;
+        return _featuresVector4.TryGetValue(name, out var arr) ? arr : null;
+    }
+
+    /// <summary>
+    /// Gets the buffer array for a specific Float32 feature.
+    /// Use this to get the correctly-sized array for a specific feature (Intensity or scalar).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Intensity" or scalar property name).</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetFeatureFloat32(string name)
+    {
+        if (_featuresFloat32 == null) return null;
+        return _featuresFloat32.TryGetValue(name, out var arr) ? arr : null;
+    }
+
+    /// <summary>
+    /// Gets the buffer array for a specific scalar feature.
+    /// Alias for GetFeatureFloat32 but more semantic for scalar usage.
+    /// </summary>
+    /// <param name="name">Scalar property name from the PLY file.</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetScalarData(string name) => GetFeatureFloat32(name);
+
     #endregion
 
     /// <summary>

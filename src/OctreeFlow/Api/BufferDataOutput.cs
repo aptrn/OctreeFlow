@@ -106,6 +106,26 @@ public class SectorData
     public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
 
     /// <summary>
+    /// Checks if this sector has data for a specific scalar feature.
+    /// </summary>
+    /// <param name="name">Scalar property name.</param>
+    /// <returns>True if the scalar data is available.</returns>
+    public bool HasScalarData(string name) => _scalarFeatures.ContainsKey(name);
+
+    /// <summary>
+    /// Gets the data for a specific scalar feature.
+    /// </summary>
+    /// <param name="name">Scalar property name.</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetScalarData(string name) => 
+        _scalarFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available scalar features in this sector.
+    /// </summary>
+    public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
+
+    /// <summary>
     /// Creates SectorData from PointData array.
     /// </summary>
     /// <param name="sectorIndex">Index of the sector.</param>
@@ -257,6 +277,9 @@ public class CombinedBufferData
     /// </summary>
     public float[]? IntensityData { get; set; }
 
+    // Internal storage for combined scalar features
+    private Dictionary<string, float[]> _scalarFeatures = new();
+
     /// <summary>
     /// Total number of points across all sectors.
     /// </summary>
@@ -281,6 +304,41 @@ public class CombinedBufferData
     /// Whether there is intensity data.
     /// </summary>
     public bool HasIntensity => IntensityData != null && TotalPointCount > 0;
+
+    /// <summary>
+    /// Combined scalar feature data as sequence of key-value pairs.
+    /// Keys are scalar property names from the PLY file.
+    /// Values: float[] arrays ready for upload to GPU buffers.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
+
+    /// <summary>
+    /// Checks if this combined data has a specific scalar feature.
+    /// </summary>
+    /// <param name="name">Scalar property name.</param>
+    /// <returns>True if the scalar data is available.</returns>
+    public bool HasScalarData(string name) => _scalarFeatures.ContainsKey(name) && TotalPointCount > 0;
+
+    /// <summary>
+    /// Gets the combined data for a specific scalar feature.
+    /// </summary>
+    /// <param name="name">Scalar property name.</param>
+    /// <returns>The float array, or null if not available.</returns>
+    public float[]? GetScalarData(string name) => 
+        _scalarFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available scalar features.
+    /// </summary>
+    public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
+
+    /// <summary>
+    /// Internal: Sets scalar data (used by CombineAllSectorData).
+    /// </summary>
+    internal void SetScalarData(string name, float[] data)
+    {
+        _scalarFeatures[name] = data;
+    }
 }
 
 /// <summary>
@@ -398,11 +456,28 @@ public class BufferUpdateResult
         bool hasNormals = sectors.Any(s => s.HasNormals);
         bool hasIntensity = sectors.Any(s => s.HasIntensity);
 
+        // Collect all scalar feature names from all sectors
+        var scalarNames = new HashSet<string>();
+        foreach (var sector in sectors)
+        {
+            foreach (var name in sector.ScalarFeatureNames)
+            {
+                scalarNames.Add(name);
+            }
+        }
+
         // Allocate combined arrays
         if (hasPosition) result.PositionData = new Vector4[totalPoints];
         if (hasColors) result.ColorsData = new Vector4[totalPoints];
         if (hasNormals) result.NormalsData = new Vector4[totalPoints];
         if (hasIntensity) result.IntensityData = new float[totalPoints];
+
+        // Allocate scalar arrays
+        var scalarArrays = new Dictionary<string, float[]>();
+        foreach (var name in scalarNames)
+        {
+            scalarArrays[name] = new float[totalPoints];
+        }
 
         // Copy data from each sector
         int offset = 0;
@@ -422,7 +497,24 @@ public class BufferUpdateResult
             if (hasIntensity && sector.IntensityData != null)
                 Array.Copy(sector.IntensityData, 0, result.IntensityData!, offset, count);
 
+            // Copy scalar data
+            foreach (var name in scalarNames)
+            {
+                var sectorScalar = sector.GetScalarData(name);
+                if (sectorScalar != null)
+                {
+                    Array.Copy(sectorScalar, 0, scalarArrays[name], offset, count);
+                }
+                // If sector doesn't have this scalar, the array remains zeroed
+            }
+
             offset += count;
+        }
+
+        // Add scalar arrays to result
+        foreach (var kvp in scalarArrays)
+        {
+            result.SetScalarData(kvp.Key, kvp.Value);
         }
 
         return result;
