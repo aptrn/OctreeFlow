@@ -11,3 +11,5 @@ prompts/*
 .idea/*
 .vscode/*
 .idea/*
+.ply
+.octree
