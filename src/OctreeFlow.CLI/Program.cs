@@ -35,7 +35,7 @@ class Program
 
         var outputOption = new Option<string>(
             aliases: new[] { "--output", "-o" },
-            description: "Output file path (without extension, will create .octree and .json)");
+            description: "Output file path (without extension, will create .octree)");
 
         var pointsPerNodeOption = new Option<int>(
             aliases: new[] { "--points-per-node", "-n" },
@@ -66,6 +66,11 @@ class Program
             getDefaultValue: () => false,
             description: "Enable verbose output");
 
+        var threadsOption = new Option<int>(
+            aliases: new[] { "--threads", "-t" },
+            getDefaultValue: () => 0,
+            description: "Number of threads to use (0 = auto-detect based on CPU cores)");
+
         var buildCommand = new Command("build", "Build an octree from a PLY file")
         {
             inputOption,
@@ -75,7 +80,8 @@ class Program
             ratioOption,
             seedOption,
             maxDepthOption,
-            verboseOption
+            verboseOption,
+            threadsOption
         };
 
         buildCommand.SetHandler(async (context) =>
@@ -88,8 +94,9 @@ class Program
             var seed = context.ParseResult.GetValueForOption(seedOption);
             var maxDepth = context.ParseResult.GetValueForOption(maxDepthOption);
             var verbose = context.ParseResult.GetValueForOption(verboseOption);
+            var threads = context.ParseResult.GetValueForOption(threadsOption);
 
-            await BuildOctree(input, output, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose);
+            await BuildOctree(input, output, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose, threads);
         });
 
         return buildCommand;
@@ -99,10 +106,10 @@ class Program
     {
         var inputOption = new Option<FileInfo>(
             aliases: new[] { "--input", "-i" },
-            description: "Input .octree or .json file path")
+            description: "Input .octree file path")
         { IsRequired = true };
 
-        var infoCommand = new Command("info", "Display information about an .octree or .json file")
+        var infoCommand = new Command("info", "Display information about an .octree file")
         {
             inputOption
         };
@@ -123,7 +130,8 @@ class Program
         float ratio,
         int? seed,
         int maxDepth,
-        bool verbose)
+        bool verbose,
+        int threads)
     {
         if (!input.Exists)
         {
@@ -138,17 +146,22 @@ class Program
             input.DirectoryName ?? ".",
             Path.GetFileNameWithoutExtension(input.Name));
 
+        // Determine thread count
+        int actualThreads = threads > 0 ? threads : Math.Max(1, Environment.ProcessorCount - 1);
+
         Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║              OctreeFlow Builder (Streaming Mode)             ║");
+        Console.WriteLine("║           OctreeFlow Builder (Parallel Streaming Mode)       ║");
         Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
         Console.WriteLine();
 
         Console.WriteLine($"Input:           {input.FullName}");
-        Console.WriteLine($"Output:          {output}.octree / {output}.json");
+        Console.WriteLine($"File size:       {FormatFileSize(input.Length)}");
+        Console.WriteLine($"Output:          {output}.octree");
         Console.WriteLine($"Points per node: {pointsPerNode}");
         Console.WriteLine($"Min distance:    {minDistance}");
         Console.WriteLine($"Level ratio:     {ratio}");
         Console.WriteLine($"Max depth:       {(maxDepth == 0 ? "unlimited" : maxDepth)}");
+        Console.WriteLine($"Threads:         {actualThreads}");
         if (seed.HasValue)
             Console.WriteLine($"Random seed:     {seed.Value}");
         Console.WriteLine();
@@ -168,19 +181,26 @@ class Program
         int nodeCount = 0;
         int lastLevel = -1;
         int lastPercent = -1;
+        var lastProgressTime = DateTime.UtcNow;
 
         try
         {
-            using var builder = new StreamingOctreeBuilder(config, input.FullName);
+            // Use the parallel builder for better performance
+            using var builder = new ParallelStreamingOctreeBuilder(config, input.FullName, actualThreads);
 
             builder.OnProgress = (phase, current, total, depth) =>
             {
                 int percent = total > 0 ? (int)(100.0 * current / total) : 0;
                 
-                // Always show progress (simplified for non-verbose, detailed for verbose)
-                if (percent != lastPercent || verbose)
+                // Throttle progress updates to avoid console spam
+                var now = DateTime.UtcNow;
+                bool shouldUpdate = percent != lastPercent || (now - lastProgressTime).TotalMilliseconds > 250;
+                
+                if (shouldUpdate)
                 {
                     lastPercent = percent;
+                    lastProgressTime = now;
+                    
                     string phaseName = phase switch
                     {
                         0 => "Indexing",
@@ -202,12 +222,12 @@ class Program
 
             builder.OnNodeCompleted = node =>
             {
-                nodeCount++;
+                Interlocked.Increment(ref nodeCount);
                 if (verbose && node.Level != lastLevel)
                 {
                     Console.WriteLine();
                     Console.Write($"  Level {node.Level}: ");
-                    lastLevel = node.Level;
+                    Interlocked.Exchange(ref lastLevel, node.Level);
                 }
                 else if (verbose)
                 {
@@ -215,7 +235,7 @@ class Program
                 }
             };
 
-            Console.WriteLine("Building octree...");
+            Console.WriteLine("Building octree (parallel mode)...");
             root = builder.Build();
             plyIndex = builder.GetPlyIndex();
             
@@ -311,35 +331,13 @@ class Program
             return Task.CompletedTask;
         }
 
-        Console.Write("Saving structure JSON... ");
-        stopwatch.Restart();
-
-        try
-        {
-            serializer.SaveStructureJson(root, output + ".json");
-            stopwatch.Stop();
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"Done! ({stopwatch.ElapsedMilliseconds}ms)");
-            Console.ResetColor();
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Failed!");
-            Console.WriteLine($"Error: {ex.Message}");
-            Console.ResetColor();
-        }
-
         // File sizes
         var octreeFileInfo = new FileInfo(output + ".octree");
-        var jsonFileInfo = new FileInfo(output + ".json");
 
         Console.WriteLine();
-        Console.WriteLine($"Output files:");
+        Console.WriteLine($"Output file:");
         if (octreeFileInfo.Exists)
             Console.WriteLine($"  {octreeFileInfo.Name}: {FormatFileSize(octreeFileInfo.Length)}");
-        if (jsonFileInfo.Exists)
-            Console.WriteLine($"  {jsonFileInfo.Name}: {FormatFileSize(jsonFileInfo.Length)}");
         Console.WriteLine();
         Console.WriteLine("Done!");
 
@@ -367,27 +365,31 @@ class Program
         {
             var serializer = new StreamingOctreeSerializer();
             OctreeNode? root = null;
+            OctreeFileInfo? fileInfo = null;
 
-            if (input.Extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
+            if (input.Extension.Equals(".octree", StringComparison.OrdinalIgnoreCase))
             {
-                root = serializer.LoadStructureJson(input.FullName);
+                var (loadedRoot, info) = serializer.LoadOctreeFile(input.FullName);
+                root = loadedRoot;
+                fileInfo = info;
+
+                if (fileInfo != null)
+                {
+                    Console.WriteLine("File Info:");
+                    Console.WriteLine($"  Version:        {fileInfo.Version}");
+                    Console.WriteLine($"  Total points:   {fileInfo.TotalPoints:N0}");
+                    Console.WriteLine($"  PLY path:       {fileInfo.PlyPath}");
+                    Console.WriteLine($"  Properties:     {string.Join(", ", fileInfo.PropertyNames)}");
+                    Console.WriteLine($"  Bounds:         {fileInfo.Bounds.Minimum} - {fileInfo.Bounds.Maximum}");
+                    Console.WriteLine($"  Node count:     {fileInfo.NodeCount:N0}");
+                    Console.WriteLine();
+                }
             }
             else
             {
-                // For .octree files, we'd need the full deserializer
-                // For now just load JSON structure if available
-                var jsonPath = Path.ChangeExtension(input.FullName, ".json");
-                if (File.Exists(jsonPath))
-                {
-                    Console.WriteLine($"(Reading structure from {Path.GetFileName(jsonPath)})");
-                    Console.WriteLine();
-                    root = serializer.LoadStructureJson(jsonPath);
-                }
-                else
-                {
-                    Console.WriteLine("Note: JSON structure file not found. Limited info available.");
-                    Console.WriteLine();
-                }
+                Console.WriteLine("Note: Only .octree files are supported for info display.");
+                Console.WriteLine();
+                return;
             }
 
             if (root != null)

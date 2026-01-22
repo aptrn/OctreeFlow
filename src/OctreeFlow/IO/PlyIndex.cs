@@ -1,6 +1,8 @@
 using Stride.Core.Mathematics;
 using System.Text;
 using System.Globalization;
+using System.Collections.Concurrent;
+using System.IO.MemoryMappedFiles;
 
 namespace OctreeFlow.IO;
 
@@ -122,11 +124,142 @@ public class PlyIndex : IDisposable
         // Build property index map
         BuildPropertyMap();
 
-        // Single pass: compute bounds AND write positions cache
-        ComputeBoundsAndWritePositions(positionsCachePath, onProgress);
+        // Single pass: compute bounds AND write positions cache (with buffered I/O)
+        ComputeBoundsAndWritePositionsBuffered(positionsCachePath, onProgress);
     }
 
-    private void ComputeBoundsAndWritePositions(string positionsCachePath, Action<int, int>? onProgress)
+    /// <summary>
+    /// Single-pass with parallel bounds computation after writing positions.
+    /// Faster for very large files.
+    /// </summary>
+    public void BuildIndexWithPositionsCacheParallel(string positionsCachePath, int threadCount, Action<int, int>? onProgress = null)
+    {
+        _stream = File.OpenRead(_filePath);
+        _reader = new BinaryReader(_stream, Encoding.ASCII, leaveOpen: true);
+
+        // Parse header
+        ParseHeader();
+
+        // Build property index map
+        BuildPropertyMap();
+
+        // Write positions cache first (must be sequential due to PLY streaming)
+        WritePositionsCache(positionsCachePath, onProgress);
+
+        // Then compute bounds in parallel from the cache
+        ComputeBoundsParallel(positionsCachePath, threadCount);
+    }
+
+    private void WritePositionsCache(string positionsCachePath, Action<int, int>? onProgress)
+    {
+        if (_stream == null || _reader == null) return;
+
+        _stream.Position = DataStartOffset;
+
+        int reportInterval = Math.Max(1, VertexCount / 100);
+
+        // Use buffered writer for better I/O performance
+        using var fileStream = new FileStream(positionsCachePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
+        using var posWriter = new BinaryWriter(fileStream);
+
+        if (Format == PlyFormat.Ascii)
+        {
+            using var streamReader = new StreamReader(_stream, Encoding.ASCII, leaveOpen: true);
+            for (int i = 0; i < VertexCount; i++)
+            {
+                var line = streamReader.ReadLine();
+                if (line == null) break;
+
+                var values = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var pos = ParsePositionFromAscii(values);
+
+                posWriter.Write(pos.X);
+                posWriter.Write(pos.Y);
+                posWriter.Write(pos.Z);
+
+                if (i % reportInterval == 0)
+                    onProgress?.Invoke(i, VertexCount);
+            }
+        }
+        else
+        {
+            bool bigEndian = Format == PlyFormat.BinaryBigEndian;
+
+            for (int i = 0; i < VertexCount; i++)
+            {
+                var values = ReadVertexBinaryFull(bigEndian);
+
+                var pos = new Vector3(
+                    _xIndex >= 0 && _xIndex < values.Length ? values[_xIndex] : 0,
+                    _yIndex >= 0 && _yIndex < values.Length ? values[_yIndex] : 0,
+                    _zIndex >= 0 && _zIndex < values.Length ? values[_zIndex] : 0
+                );
+
+                posWriter.Write(pos.X);
+                posWriter.Write(pos.Y);
+                posWriter.Write(pos.Z);
+
+                if (i % reportInterval == 0)
+                    onProgress?.Invoke(i, VertexCount);
+            }
+        }
+
+        onProgress?.Invoke(VertexCount, VertexCount);
+    }
+
+    private void ComputeBoundsParallel(string positionsCachePath, int threadCount)
+    {
+        // Use memory-mapped file for parallel access
+        using var mmf = MemoryMappedFile.CreateFromFile(positionsCachePath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+
+        var partitioner = Partitioner.Create(0, VertexCount, Math.Max(10000, VertexCount / (threadCount * 4)));
+        var localMins = new ConcurrentBag<Vector3>();
+        var localMaxs = new ConcurrentBag<Vector3>();
+
+        Parallel.ForEach(
+            partitioner,
+            new ParallelOptions { MaxDegreeOfParallelism = threadCount },
+            () => (new Vector3(float.MaxValue), new Vector3(float.MinValue)),
+            (range, state, local) =>
+            {
+                using var accessor = mmf.CreateViewAccessor(range.Item1 * 12L, (range.Item2 - range.Item1) * 12L, MemoryMappedFileAccess.Read);
+                var (min, max) = local;
+
+                long offset = 0;
+                for (int i = range.Item1; i < range.Item2; i++)
+                {
+                    float x = 0, y = 0, z = 0;
+                    accessor.Read(offset, out x);
+                    accessor.Read(offset + 4, out y);
+                    accessor.Read(offset + 8, out z);
+                    offset += 12;
+
+                    var pos = new Vector3(x, y, z);
+                    min = Vector3.Min(min, pos);
+                    max = Vector3.Max(max, pos);
+                }
+
+                return (min, max);
+            },
+            local =>
+            {
+                localMins.Add(local.Item1);
+                localMaxs.Add(local.Item2);
+            });
+
+        // Combine results
+        Vector3 finalMin = new Vector3(float.MaxValue);
+        Vector3 finalMax = new Vector3(float.MinValue);
+
+        foreach (var min in localMins)
+            finalMin = Vector3.Min(finalMin, min);
+        foreach (var max in localMaxs)
+            finalMax = Vector3.Max(finalMax, max);
+
+        Bounds = new BoundingBox(finalMin, finalMax);
+    }
+
+    private void ComputeBoundsAndWritePositionsBuffered(string positionsCachePath, Action<int, int>? onProgress)
     {
         if (_stream == null || _reader == null) return;
 
@@ -137,7 +270,9 @@ public class PlyIndex : IDisposable
 
         int reportInterval = Math.Max(1, VertexCount / 100);
 
-        using var posWriter = new BinaryWriter(File.Create(positionsCachePath));
+        // Use buffered writer for better I/O performance
+        using var fileStream = new FileStream(positionsCachePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
+        using var posWriter = new BinaryWriter(fileStream);
 
         if (Format == PlyFormat.Ascii)
         {

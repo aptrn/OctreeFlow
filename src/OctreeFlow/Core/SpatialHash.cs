@@ -1,4 +1,5 @@
 using Stride.Core.Mathematics;
+using System.Runtime.CompilerServices;
 
 namespace OctreeFlow.Core;
 
@@ -12,6 +13,7 @@ public class SpatialHash
     private readonly float _cellSize;
     private readonly float _distanceThreshold;
     private readonly float _distanceThresholdSq;
+    private readonly float _inverseCellSize;
 
     /// <summary>
     /// Number of points currently in the hash.
@@ -27,18 +29,35 @@ public class SpatialHash
         _distanceThreshold = distanceThreshold;
         _distanceThresholdSq = distanceThreshold * distanceThreshold;
         _cellSize = distanceThreshold; // Cell size = threshold for optimal queries
-        _cells = new Dictionary<long, List<Vector3>>();
+        _inverseCellSize = 1.0f / distanceThreshold; // Pre-compute for faster division
+        _cells = new Dictionary<long, List<Vector3>>(256); // Initial capacity
+        Count = 0;
+    }
+
+    /// <summary>
+    /// Creates a spatial hash with the given distance threshold and expected point count.
+    /// </summary>
+    public SpatialHash(float distanceThreshold, int expectedPointCount)
+    {
+        _distanceThreshold = distanceThreshold;
+        _distanceThresholdSq = distanceThreshold * distanceThreshold;
+        _cellSize = distanceThreshold;
+        _inverseCellSize = 1.0f / distanceThreshold;
+        // Estimate number of cells based on expected points (assume ~2 points per cell on average)
+        int estimatedCells = Math.Max(256, expectedPointCount / 2);
+        _cells = new Dictionary<long, List<Vector3>>(estimatedCells);
         Count = 0;
     }
 
     /// <summary>
     /// Computes the cell key for a position.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private long GetCellKey(Vector3 pos)
     {
-        int x = (int)MathF.Floor(pos.X / _cellSize);
-        int y = (int)MathF.Floor(pos.Y / _cellSize);
-        int z = (int)MathF.Floor(pos.Z / _cellSize);
+        int x = (int)MathF.Floor(pos.X * _inverseCellSize);
+        int y = (int)MathF.Floor(pos.Y * _inverseCellSize);
+        int z = (int)MathF.Floor(pos.Z * _inverseCellSize);
 
         // Pack into 64-bit key (21 bits each, allows ~2M range per axis)
         const long mask = 0x1FFFFF; // 21 bits
@@ -48,12 +67,13 @@ public class SpatialHash
     /// <summary>
     /// Gets cell coordinates for a position.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private (int x, int y, int z) GetCellCoords(Vector3 pos)
     {
         return (
-            (int)MathF.Floor(pos.X / _cellSize),
-            (int)MathF.Floor(pos.Y / _cellSize),
-            (int)MathF.Floor(pos.Z / _cellSize)
+            (int)MathF.Floor(pos.X * _inverseCellSize),
+            (int)MathF.Floor(pos.Y * _inverseCellSize),
+            (int)MathF.Floor(pos.Z * _inverseCellSize)
         );
     }
 
@@ -87,25 +107,33 @@ public class SpatialHash
     /// Checks if a point is within the distance threshold of any existing point.
     /// Returns true if the point is TOO CLOSE to an existing point.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool HasNearbyPoint(Vector3 position)
     {
         var (cx, cy, cz) = GetCellCoords(position);
 
         // Check 3x3x3 neighborhood of cells (27 cells total)
+        // Unrolled inner loops for better performance
         for (int dx = -1; dx <= 1; dx++)
         {
+            int nx = cx + dx;
             for (int dy = -1; dy <= 1; dy++)
             {
+                int ny = cy + dy;
                 for (int dz = -1; dz <= 1; dz++)
                 {
-                    long key = GetCellKeyFromCoords(cx + dx, cy + dy, cz + dz);
+                    long key = GetCellKeyFromCoords(nx, ny, cz + dz);
 
                     if (_cells.TryGetValue(key, out var cell))
                     {
-                        foreach (var existing in cell)
+                        // Use index-based iteration for better performance
+                        for (int i = 0; i < cell.Count; i++)
                         {
-                            var diff = position - existing;
-                            float distSq = diff.X * diff.X + diff.Y * diff.Y + diff.Z * diff.Z;
+                            var existing = cell[i];
+                            float dx2 = position.X - existing.X;
+                            float dy2 = position.Y - existing.Y;
+                            float dz2 = position.Z - existing.Z;
+                            float distSq = dx2 * dx2 + dy2 * dy2 + dz2 * dz2;
 
                             if (distSq < _distanceThresholdSq)
                                 return true;
