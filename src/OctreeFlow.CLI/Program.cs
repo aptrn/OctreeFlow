@@ -35,7 +35,7 @@ class Program
 
         var outputOption = new Option<string>(
             aliases: new[] { "--output", "-o" },
-            description: "Output file path (without extension, will create .octree and .json)");
+            description: "Output file path (without extension, will create .octree)");
 
         var pointsPerNodeOption = new Option<int>(
             aliases: new[] { "--points-per-node", "-n" },
@@ -106,10 +106,10 @@ class Program
     {
         var inputOption = new Option<FileInfo>(
             aliases: new[] { "--input", "-i" },
-            description: "Input .octree or .json file path")
+            description: "Input .octree file path")
         { IsRequired = true };
 
-        var infoCommand = new Command("info", "Display information about an .octree or .json file")
+        var infoCommand = new Command("info", "Display information about an .octree file")
         {
             inputOption
         };
@@ -156,7 +156,7 @@ class Program
 
         Console.WriteLine($"Input:           {input.FullName}");
         Console.WriteLine($"File size:       {FormatFileSize(input.Length)}");
-        Console.WriteLine($"Output:          {output}.octree / {output}.json");
+        Console.WriteLine($"Output:          {output}.octree");
         Console.WriteLine($"Points per node: {pointsPerNode}");
         Console.WriteLine($"Min distance:    {minDistance}");
         Console.WriteLine($"Level ratio:     {ratio}");
@@ -331,35 +331,13 @@ class Program
             return Task.CompletedTask;
         }
 
-        Console.Write("Saving structure JSON... ");
-        stopwatch.Restart();
-
-        try
-        {
-            serializer.SaveStructureJson(root, output + ".json");
-            stopwatch.Stop();
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"Done! ({stopwatch.ElapsedMilliseconds}ms)");
-            Console.ResetColor();
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Failed!");
-            Console.WriteLine($"Error: {ex.Message}");
-            Console.ResetColor();
-        }
-
         // File sizes
         var octreeFileInfo = new FileInfo(output + ".octree");
-        var jsonFileInfo = new FileInfo(output + ".json");
 
         Console.WriteLine();
-        Console.WriteLine($"Output files:");
+        Console.WriteLine($"Output file:");
         if (octreeFileInfo.Exists)
             Console.WriteLine($"  {octreeFileInfo.Name}: {FormatFileSize(octreeFileInfo.Length)}");
-        if (jsonFileInfo.Exists)
-            Console.WriteLine($"  {jsonFileInfo.Name}: {FormatFileSize(jsonFileInfo.Length)}");
         Console.WriteLine();
         Console.WriteLine("Done!");
 
@@ -387,27 +365,31 @@ class Program
         {
             var serializer = new StreamingOctreeSerializer();
             OctreeNode? root = null;
+            OctreeFileInfo? fileInfo = null;
 
-            if (input.Extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
+            if (input.Extension.Equals(".octree", StringComparison.OrdinalIgnoreCase))
             {
-                root = serializer.LoadStructureJson(input.FullName);
+                var (loadedRoot, info) = serializer.LoadOctreeFile(input.FullName);
+                root = loadedRoot;
+                fileInfo = info;
+
+                if (fileInfo != null)
+                {
+                    Console.WriteLine("File Info:");
+                    Console.WriteLine($"  Version:        {fileInfo.Version}");
+                    Console.WriteLine($"  Total points:   {fileInfo.TotalPoints:N0}");
+                    Console.WriteLine($"  PLY path:       {fileInfo.PlyPath}");
+                    Console.WriteLine($"  Properties:     {string.Join(", ", fileInfo.PropertyNames)}");
+                    Console.WriteLine($"  Bounds:         {fileInfo.Bounds.Minimum} - {fileInfo.Bounds.Maximum}");
+                    Console.WriteLine($"  Node count:     {fileInfo.NodeCount:N0}");
+                    Console.WriteLine();
+                }
             }
             else
             {
-                // For .octree files, we'd need the full deserializer
-                // For now just load JSON structure if available
-                var jsonPath = Path.ChangeExtension(input.FullName, ".json");
-                if (File.Exists(jsonPath))
-                {
-                    Console.WriteLine($"(Reading structure from {Path.GetFileName(jsonPath)})");
-                    Console.WriteLine();
-                    root = serializer.LoadStructureJson(jsonPath);
-                }
-                else
-                {
-                    Console.WriteLine("Note: JSON structure file not found. Limited info available.");
-                    Console.WriteLine();
-                }
+                Console.WriteLine("Note: Only .octree files are supported for info display.");
+                Console.WriteLine();
+                return;
             }
 
             if (root != null)
