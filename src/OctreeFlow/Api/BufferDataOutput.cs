@@ -409,6 +409,46 @@ public class BufferUpdateResult
     /// </summary>
     public bool HasNewData => NewSectors.Count > 0;
 
+    #region Diagnostic Properties
+
+    /// <summary>
+    /// Number of nodes that had data truncated because they exceeded MaxPointsPerSector.
+    /// If this is > 0, you may need to increase pointsPerNodeOverride.
+    /// </summary>
+    public int TruncatedNodes { get; set; }
+
+    /// <summary>
+    /// Total number of points lost due to truncation.
+    /// </summary>
+    public int TruncatedPoints { get; set; }
+
+    /// <summary>
+    /// Reason for the last skipped node (for debugging).
+    /// </summary>
+    public string? LastSkipReason { get; set; }
+
+    /// <summary>
+    /// Maximum points allowed per sector (= PointsPerNode setting).
+    /// </summary>
+    public int MaxPointsPerSector { get; set; }
+
+    /// <summary>
+    /// Total number of sectors available in the buffer.
+    /// </summary>
+    public int AvailableSectors { get; set; }
+
+    /// <summary>
+    /// Number of sectors currently in use.
+    /// </summary>
+    public int UsedSectors { get; set; }
+
+    /// <summary>
+    /// True if any data was truncated this frame.
+    /// </summary>
+    public bool HasTruncation => TruncatedNodes > 0;
+
+    #endregion
+
     /// <summary>
     /// Gets combined buffer data from all NEW sectors only, for uploading at offset 0.
     /// WARNING: This only returns NEW data - previously loaded sectors are not included!
