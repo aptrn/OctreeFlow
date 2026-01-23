@@ -33,6 +33,7 @@ public class SectorManager : IDisposable
     // Available features (determined from PLY file)
     private readonly HashSet<string> _availableVector4Features = new();
     private readonly HashSet<string> _availableFloat32Features = new();
+    private readonly HashSet<string> _availableInt32Features = new();
 
     // Diagnostic tracking
     private string? _lastSkipReason;
@@ -113,14 +114,30 @@ public class SectorManager : IDisposable
     /// <param name="float32Features">Names of available Float32 features (e.g., "Intensity", scalar names).</param>
     public void SetAvailableFeatures(IEnumerable<string> vector4Features, IEnumerable<string> float32Features)
     {
+        SetAvailableFeatures(vector4Features, float32Features, Enumerable.Empty<string>());
+    }
+
+    /// <summary>
+    /// Sets the available features based on what's in the PLY file.
+    /// Call this after initialization with the feature names from OctreeFlowReader.
+    /// </summary>
+    /// <param name="vector4Features">Names of available Vector4 features (e.g., "Position", "Colors", "Normals").</param>
+    /// <param name="float32Features">Names of available Float32 features (e.g., "Intensity", scalar names).</param>
+    /// <param name="int32Features">Names of available Int32 features (e.g., "Id").</param>
+    public void SetAvailableFeatures(IEnumerable<string> vector4Features, IEnumerable<string> float32Features, IEnumerable<string> int32Features)
+    {
         _availableVector4Features.Clear();
         _availableFloat32Features.Clear();
+        _availableInt32Features.Clear();
         
         foreach (var f in vector4Features)
             _availableVector4Features.Add(f);
         
         foreach (var f in float32Features)
             _availableFloat32Features.Add(f);
+        
+        foreach (var f in int32Features)
+            _availableInt32Features.Add(f);
     }
 
     /// <summary>
@@ -267,17 +284,20 @@ public class SectorManager : IDisposable
             // Calculate byte offsets
             int byteOffsetVector4 = _currentOffset * 16; // 16 bytes per Vector4
             int byteOffsetFloat = _currentOffset * 4;    // 4 bytes per float
+            int byteOffsetInt32 = _currentOffset * 4;    // 4 bytes per int
 
             // Create sector data
             var sectorData = SectorData.FromPointData(
                 _activeNodes.Count, // Use node index as "sector index"
                 byteOffsetVector4,
                 byteOffsetFloat,
+                byteOffsetInt32,
                 node.Id,
                 node.Level,
                 pointData,
                 _availableVector4Features,
-                _availableFloat32Features);
+                _availableFloat32Features,
+                _availableInt32Features);
 
             // Create variable sector
             var sector = new VariableSector
@@ -334,6 +354,7 @@ public class SectorManager : IDisposable
                 SectorIndex = index++,
                 ByteOffsetVector4 = s.StartOffset * 16,
                 ByteOffsetFloat = s.StartOffset * 4,
+                ByteOffsetInt32 = s.StartOffset * 4,
                 StartIndex = s.StartOffset,
                 PointCount = s.PointCount,
                 NodeId = s.NodeId,

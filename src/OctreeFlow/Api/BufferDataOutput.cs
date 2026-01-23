@@ -54,11 +54,26 @@ public class SectorData
     /// </summary>
     public int ElementOffsetFloat32 => ByteOffsetFloat32 / 4;
 
+    /// <summary>
+    /// Byte offset in the buffer for Int32 features.
+    /// Use this with DynamicBufferAdvanced SetData offset for int buffers.
+    /// </summary>
+    public int ByteOffsetInt32 { get; set; }
+
+    /// <summary>
+    /// Element offset in the buffer for Int32 features.
+    /// Use this if SetData expects element index instead of byte offset.
+    /// </summary>
+    public int ElementOffsetInt32 => ByteOffsetInt32 / 4;
+
     // Internal storage for Vector4 features (Position, Colors, Normals)
     private Dictionary<string, Vector4[]> _vectorFeatures = new();
 
     // Internal storage for scalar features (Intensity and custom scalars)
     private Dictionary<string, float[]> _scalarFeatures = new();
+
+    // Internal storage for integer features (Id and custom integers)
+    private Dictionary<string, int[]> _integerFeatures = new();
 
     /// <summary>
     /// Vector4 feature data as sequence of key-value pairs.
@@ -115,6 +130,33 @@ public class SectorData
     public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
 
     /// <summary>
+    /// Integer feature data as sequence of key-value pairs.
+    /// Keys are integer property names (e.g., "Id").
+    /// Values: int[] arrays ready for upload to GPU buffers.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, int[]>> IntegerFeatures => _integerFeatures;
+
+    /// <summary>
+    /// Checks if this sector has data for a specific integer feature.
+    /// </summary>
+    /// <param name="name">Integer property name (e.g., "Id").</param>
+    /// <returns>True if the integer data is available.</returns>
+    public bool HasIntegerData(string name) => _integerFeatures.ContainsKey(name);
+
+    /// <summary>
+    /// Gets the data for a specific integer feature.
+    /// </summary>
+    /// <param name="name">Integer property name (e.g., "Id").</param>
+    /// <returns>The int array, or null if not available.</returns>
+    public int[]? GetIntegerData(string name) => 
+        _integerFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available integer features in this sector.
+    /// </summary>
+    public IEnumerable<string> IntegerFeatureNames => _integerFeatures.Keys;
+
+    /// <summary>
     /// Internal: Sets vector data (used by FromPointData).
     /// </summary>
     internal void SetVectorData(string name, Vector4[] data)
@@ -128,6 +170,14 @@ public class SectorData
     internal void SetScalarData(string name, float[] data)
     {
         _scalarFeatures[name] = data;
+    }
+
+    /// <summary>
+    /// Internal: Sets integer data (used by FromPointData).
+    /// </summary>
+    internal void SetIntegerData(string name, int[] data)
+    {
+        _integerFeatures[name] = data;
     }
 
     /// <summary>
@@ -151,6 +201,35 @@ public class SectorData
         ISet<string> availableVector4Features,
         ISet<string> availableFloat32Features)
     {
+        return FromPointData(sectorIndex, byteOffsetVector4, byteOffsetFloat, 0, nodeId, level, points, 
+            availableVector4Features, availableFloat32Features, new HashSet<string>());
+    }
+
+    /// <summary>
+    /// Creates SectorData from PointData array with integer feature support.
+    /// </summary>
+    /// <param name="sectorIndex">Index of the sector.</param>
+    /// <param name="byteOffsetVector4">Byte offset for Vector4 data.</param>
+    /// <param name="byteOffsetFloat">Byte offset for float data.</param>
+    /// <param name="byteOffsetInt32">Byte offset for int32 data.</param>
+    /// <param name="nodeId">Node ID.</param>
+    /// <param name="level">Octree level.</param>
+    /// <param name="points">Point data array.</param>
+    /// <param name="availableVector4Features">Set of Vector4 feature names that should be included (e.g., "Position", "Colors", "Normals"). Only features in this set will be added.</param>
+    /// <param name="availableFloat32Features">Set of Float32 feature names that should be included (e.g., "Intensity", scalar names). Only features in this set will be added.</param>
+    /// <param name="availableInt32Features">Set of Int32 feature names that should be included (e.g., "Id"). Only features in this set will be added.</param>
+    public static SectorData FromPointData(
+        int sectorIndex, 
+        int byteOffsetVector4, 
+        int byteOffsetFloat, 
+        int byteOffsetInt32,
+        string nodeId, 
+        int level, 
+        PointData[] points,
+        ISet<string> availableVector4Features,
+        ISet<string> availableFloat32Features,
+        ISet<string> availableInt32Features)
+    {
         var result = new SectorData
         {
             SectorIndex = sectorIndex,
@@ -158,7 +237,8 @@ public class SectorData
             Level = level,
             PointCount = points.Length,
             ByteOffsetVector4 = byteOffsetVector4,
-            ByteOffsetFloat32 = byteOffsetFloat
+            ByteOffsetFloat32 = byteOffsetFloat,
+            ByteOffsetInt32 = byteOffsetInt32
         };
 
         // Create arrays only for available Vector4 features
@@ -171,6 +251,12 @@ public class SectorData
         foreach (var scalarName in availableFloat32Features)
         {
             result._scalarFeatures[scalarName] = new float[points.Length];
+        }
+
+        // Create arrays only for available integer features
+        foreach (var intName in availableInt32Features)
+        {
+            result._integerFeatures[intName] = new int[points.Length];
         }
 
         // Convert point data
@@ -189,6 +275,10 @@ public class SectorData
             
             if (result._scalarFeatures.TryGetValue("Intensity", out var intArr))
                 intArr[i] = pt.Intensity;
+
+            // Copy Id to integer features
+            if (result._integerFeatures.TryGetValue("Id", out var idArr))
+                idArr[i] = pt.Id;
 
             // Copy scalars from PointData
             if (pt.Scalars != null)
@@ -228,6 +318,11 @@ public struct SectorInfo
     public int ByteOffsetFloat { get; set; }
 
     /// <summary>
+    /// Byte offset in buffer (for int32 buffers).
+    /// </summary>
+    public int ByteOffsetInt32 { get; set; }
+
+    /// <summary>
     /// Start index in buffer (element index, not byte).
     /// </summary>
     public int StartIndex { get; set; }
@@ -260,6 +355,9 @@ public class CombinedBufferData
     // Internal storage for combined scalar features
     private Dictionary<string, float[]> _scalarFeatures = new();
 
+    // Internal storage for combined integer features
+    private Dictionary<string, int[]> _integerFeatures = new();
+
     /// <summary>
     /// Total number of points across all sectors.
     /// </summary>
@@ -278,6 +376,13 @@ public class CombinedBufferData
     /// Values: float[] arrays ready for upload to GPU buffers.
     /// </summary>
     public IEnumerable<KeyValuePair<string, float[]>> ScalarFeatures => _scalarFeatures;
+
+    /// <summary>
+    /// Combined integer feature data as sequence of key-value pairs.
+    /// Keys are integer property names (e.g., "Id").
+    /// Values: int[] arrays ready for upload to GPU buffers.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, int[]>> IntegerFeatures => _integerFeatures;
 
     /// <summary>
     /// Checks if this combined data has a specific Vector4 feature.
@@ -320,6 +425,26 @@ public class CombinedBufferData
     public IEnumerable<string> ScalarFeatureNames => _scalarFeatures.Keys;
 
     /// <summary>
+    /// Checks if this combined data has a specific integer feature.
+    /// </summary>
+    /// <param name="name">Integer property name (e.g., "Id").</param>
+    /// <returns>True if the integer data is available.</returns>
+    public bool HasIntegerData(string name) => _integerFeatures.ContainsKey(name) && TotalPointCount > 0;
+
+    /// <summary>
+    /// Gets the combined data for a specific integer feature.
+    /// </summary>
+    /// <param name="name">Integer property name (e.g., "Id").</param>
+    /// <returns>The int array, or null if not available.</returns>
+    public int[]? GetIntegerData(string name) => 
+        _integerFeatures.TryGetValue(name, out var arr) ? arr : null;
+
+    /// <summary>
+    /// Gets the names of all available integer features.
+    /// </summary>
+    public IEnumerable<string> IntegerFeatureNames => _integerFeatures.Keys;
+
+    /// <summary>
     /// Internal: Sets vector data (used by CombineAllSectorData).
     /// </summary>
     internal void SetVectorData(string name, Vector4[] data)
@@ -333,6 +458,14 @@ public class CombinedBufferData
     internal void SetScalarData(string name, float[] data)
     {
         _scalarFeatures[name] = data;
+    }
+
+    /// <summary>
+    /// Internal: Sets integer data (used by CombineAllSectorData).
+    /// </summary>
+    internal void SetIntegerData(string name, int[] data)
+    {
+        _integerFeatures[name] = data;
     }
 }
 
@@ -505,6 +638,16 @@ public class BufferUpdateResult
             }
         }
 
+        // Collect all integer feature names from all sectors
+        var integerNames = new HashSet<string>();
+        foreach (var sector in sectors)
+        {
+            foreach (var name in sector.IntegerFeatureNames)
+            {
+                integerNames.Add(name);
+            }
+        }
+
         // Allocate combined Vector4 arrays
         var vectorArrays = new Dictionary<string, Vector4[]>();
         foreach (var name in vectorNames)
@@ -517,6 +660,13 @@ public class BufferUpdateResult
         foreach (var name in scalarNames)
         {
             scalarArrays[name] = new float[totalPoints];
+        }
+
+        // Allocate combined integer arrays
+        var integerArrays = new Dictionary<string, int[]>();
+        foreach (var name in integerNames)
+        {
+            integerArrays[name] = new int[totalPoints];
         }
 
         // Copy data from each sector
@@ -547,6 +697,17 @@ public class BufferUpdateResult
                 // If sector doesn't have this scalar, the array remains zeroed
             }
 
+            // Copy integer data
+            foreach (var name in integerNames)
+            {
+                var sectorInteger = sector.GetIntegerData(name);
+                if (sectorInteger != null)
+                {
+                    Array.Copy(sectorInteger, 0, integerArrays[name], offset, count);
+                }
+                // If sector doesn't have this integer, the array remains zeroed
+            }
+
             offset += count;
         }
 
@@ -560,6 +721,12 @@ public class BufferUpdateResult
         foreach (var kvp in scalarArrays)
         {
             result.SetScalarData(kvp.Key, kvp.Value);
+        }
+
+        // Add integer arrays to result
+        foreach (var kvp in integerArrays)
+        {
+            result.SetIntegerData(kvp.Key, kvp.Value);
         }
 
         return result;
@@ -597,6 +764,11 @@ public class BufferConfiguration
     public const int BytesPerFloat = 4;
 
     /// <summary>
+    /// Bytes per point for int32 buffers (4 bytes per int).
+    /// </summary>
+    public const int BytesPerInt32 = 4;
+
+    /// <summary>
     /// Total size in bytes for a Vector4 buffer.
     /// </summary>
     public long TotalBytesVector4 => (long)TotalCapacity * BytesPerVector4;
@@ -607,6 +779,11 @@ public class BufferConfiguration
     public long TotalBytesFloat => (long)TotalCapacity * BytesPerFloat;
 
     /// <summary>
+    /// Total size in bytes for an int32 buffer.
+    /// </summary>
+    public long TotalBytesInt32 => (long)TotalCapacity * BytesPerInt32;
+
+    /// <summary>
     /// Byte offset for a given sector in Vector4 buffers.
     /// </summary>
     public int GetByteOffsetVector4(int sectorIndex) => sectorIndex * MaxPointsPerSector * BytesPerVector4;
@@ -615,6 +792,11 @@ public class BufferConfiguration
     /// Byte offset for a given sector in float buffers.
     /// </summary>
     public int GetByteOffsetFloat(int sectorIndex) => sectorIndex * MaxPointsPerSector * BytesPerFloat;
+
+    /// <summary>
+    /// Byte offset for a given sector in int32 buffers.
+    /// </summary>
+    public int GetByteOffsetInt32(int sectorIndex) => sectorIndex * MaxPointsPerSector * BytesPerInt32;
 
     /// <summary>
     /// Creates configuration from buffer size in bytes.
