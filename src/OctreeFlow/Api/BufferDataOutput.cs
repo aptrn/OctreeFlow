@@ -280,6 +280,10 @@ public class SectorData
             if (result._integerFeatures.TryGetValue("Id", out var idArr))
                 idArr[i] = pt.Id;
 
+            // Copy Level to integer features (same for all points in the node)
+            if (result._integerFeatures.TryGetValue("Level", out var levelArr))
+                levelArr[i] = level;
+
             // Copy scalars from PointData
             if (pt.Scalars != null)
             {

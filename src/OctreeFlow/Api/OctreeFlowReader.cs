@@ -438,6 +438,9 @@ public class OctreeFlowReader : IDisposable
 
         // Always add Id as an integer feature - each point gets a unique ID
         _featuresInt32["Id"] = new int[bufferCapacity];
+
+        // Always add Level as an integer feature - the octree level at which the point is assigned
+        _featuresInt32["Level"] = new int[bufferCapacity];
     }
 
     /// <summary>
