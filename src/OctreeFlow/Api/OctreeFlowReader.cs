@@ -34,6 +34,7 @@ public class OctreeFlowReader : IDisposable
     private readonly Dictionary<string, NodeInfo> _nodeInfoCache = new();
     private Dictionary<string, Vector4[]>? _featuresVector4;
     private Dictionary<string, float[]>? _featuresFloat32;
+    private Dictionary<string, int[]>? _featuresInt32;
     
     private int _pointsPerNode; // Resolved from file or override (informational only)
 
@@ -165,6 +166,22 @@ public class OctreeFlowReader : IDisposable
         _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>();
 
     /// <summary>
+    /// Sequence of Int32 feature names mapped to typed arrays for buffer initialization.
+    /// Keys: "Id" (unique point identifier).
+    /// Values: int[] arrays sized to buffer capacity.
+    /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, int[]>> FeaturesInt32 => 
+        _featuresInt32 ?? Enumerable.Empty<KeyValuePair<string, int[]>>();
+
+    /// <summary>
+    /// Total buffer size in bytes for Int32 buffers (Id).
+    /// Use this to create your DynamicBufferAdvanced&lt;int&gt; with the correct size.
+    /// (1/4 the size of Vector4 buffers since int is 4 bytes vs 16 bytes).
+    /// </summary>
+    public long BufferSizeBytesInt32 => (long)_maxBufferSizeMB * 1024 * 1024 / 4;
+
+    /// <summary>
     /// Checks if a Vector4 feature exists (Position, Colors, Normals).
     /// </summary>
     /// <param name="name">Feature name (e.g., "Position", "Colors", "Normals").</param>
@@ -177,6 +194,13 @@ public class OctreeFlowReader : IDisposable
     /// <param name="name">Feature name (e.g., "Intensity" or scalar property name).</param>
     /// <returns>True if the feature is available.</returns>
     public bool HasFeatureFloat32(string name) => _featuresFloat32?.ContainsKey(name) ?? false;
+
+    /// <summary>
+    /// Checks if an Int32 feature exists (Id).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Id").</param>
+    /// <returns>True if the feature is available.</returns>
+    public bool HasFeatureInt32(string name) => _featuresInt32?.ContainsKey(name) ?? false;
 
     /// <summary>
     /// Checks if a scalar feature exists by name.
@@ -219,6 +243,18 @@ public class OctreeFlowReader : IDisposable
     {
         if (_featuresFloat32 == null) return null;
         return _featuresFloat32.TryGetValue(name, out var arr) ? arr : null;
+    }
+
+    /// <summary>
+    /// Gets the buffer array for a specific Int32 feature.
+    /// Use this to get the correctly-sized array for a specific feature (e.g., Id).
+    /// </summary>
+    /// <param name="name">Feature name (e.g., "Id").</param>
+    /// <returns>The int array, or null if not available.</returns>
+    public int[]? GetFeatureInt32(string name)
+    {
+        if (_featuresInt32 == null) return null;
+        return _featuresInt32.TryGetValue(name, out var arr) ? arr : null;
     }
 
     /// <summary>
@@ -324,20 +360,22 @@ public class OctreeFlowReader : IDisposable
         // Tell SectorManager which features are available (so it only creates matching data)
         _sectorManager.SetAvailableFeatures(
             _featuresVector4?.Keys ?? Enumerable.Empty<string>(),
-            _featuresFloat32?.Keys ?? Enumerable.Empty<string>());
+            _featuresFloat32?.Keys ?? Enumerable.Empty<string>(),
+            _featuresInt32?.Keys ?? Enumerable.Empty<string>());
 
         _isInitialized = true;
     }
 
     /// <summary>
     /// Builds the feature info dictionaries from PLY properties.
-    /// Populates FeaturesVector4 and FeaturesFloat32 with correctly-sized arrays for buffer initialization.
+    /// Populates FeaturesVector4, FeaturesFloat32, and FeaturesInt32 with correctly-sized arrays for buffer initialization.
     /// </summary>
     /// <param name="bufferCapacity">Total buffer capacity in points (used to size the arrays).</param>
     private void BuildFeatureInfo(int bufferCapacity)
     {
         _featuresVector4 = new Dictionary<string, Vector4[]>();
         _featuresFloat32 = new Dictionary<string, float[]>();
+        _featuresInt32 = new Dictionary<string, int[]>();
 
         if (_plyIndex == null) return;
 
@@ -397,6 +435,9 @@ public class OctreeFlowReader : IDisposable
         {
             _featuresFloat32["Intensity"] = new float[bufferCapacity];
         }
+
+        // Always add Id as an integer feature - each point gets a unique ID
+        _featuresInt32["Id"] = new int[bufferCapacity];
     }
 
     /// <summary>
@@ -966,6 +1007,7 @@ public class OctreeFlowReader : IDisposable
 
     /// <summary>
     /// Reads point data for the given indices from the PLY file.
+    /// Each point's Id is set to its original index in the PLY file.
     /// </summary>
     private PointData[] ReadPointData(int[] indices)
     {
@@ -980,6 +1022,7 @@ public class OctreeFlowReader : IDisposable
             {
                 var values = _plyIndex.ReadVertex(indices[i]);
                 result[i] = ConvertToPointData(values);
+                result[i].Id = indices[i]; // Set Id to original PLY index
             }
         }
         else
@@ -993,6 +1036,7 @@ public class OctreeFlowReader : IDisposable
                 while (currentIndex < sortedIndices.Length && sortedIndices[currentIndex].idx == vertexIndex)
                 {
                     result[sortedIndices[currentIndex].i] = ConvertToPointData(values);
+                    result[sortedIndices[currentIndex].i].Id = vertexIndex; // Set Id to original PLY index
                     currentIndex++;
                 }
             });

@@ -9,6 +9,11 @@ namespace OctreeFlow.Data;
 public struct PointData
 {
     /// <summary>
+    /// Unique identifier for this point.
+    /// </summary>
+    public int Id;
+
+    /// <summary>
     /// 3D position of the point.
     /// </summary>
     public Vector3 Position;
@@ -36,6 +41,7 @@ public struct PointData
 
     public PointData(Vector3 position)
     {
+        Id = 0;
         Position = position;
         Color = new Color4(1f, 1f, 1f, 1f);
         Normal = Vector3.Zero;
@@ -45,6 +51,7 @@ public struct PointData
 
     public PointData(Vector3 position, Color4 color)
     {
+        Id = 0;
         Position = position;
         Color = color;
         Normal = Vector3.Zero;
@@ -54,9 +61,20 @@ public struct PointData
 
     public PointData(Vector3 position, Color4 color, Vector3 normal)
     {
+        Id = 0;
         Position = position;
         Color = color;
         Normal = normal;
+        Intensity = 1f;
+        Scalars = null;
+    }
+
+    public PointData(int id, Vector3 position, Color4 color)
+    {
+        Id = id;
+        Position = position;
+        Color = color;
+        Normal = Vector3.Zero;
         Intensity = 1f;
         Scalars = null;
     }
