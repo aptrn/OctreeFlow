@@ -574,10 +574,9 @@ class Program
             Console.WriteLine();
             
             Console.WriteLine("Buffer configuration:");
-            Console.WriteLine($"  Points/node:       {reader.PointsPerNode:N0}");
+            Console.WriteLine($"  Points/node (info):{reader.PointsPerNode:N0} ({reader.PointsPerNodeSource})");
             Console.WriteLine($"  Max buffer size:   {reader.MaxBufferSizeMB} MB per buffer");
-            Console.WriteLine($"  Max nodes:         {reader.MaxNodes:N0} (calculated)");
-            Console.WriteLine($"  Buffer capacity:   {reader.BufferCapacity:N0} points");
+            Console.WriteLine($"  Buffer capacity:   {reader.BufferCapacityPoints:N0} points max");
             Console.WriteLine($"  Vector4 buffer:    {FormatFileSize(reader.BufferSizeBytesVector4)}");
             Console.WriteLine($"  Float32 buffer:    {FormatFileSize(reader.BufferSizeBytesFloat32)}");
             Console.WriteLine();
