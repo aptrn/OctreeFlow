@@ -10,10 +10,11 @@ namespace OctreeFlow.IO;
 /// The .octree file contains only the structure with point indices - no point data.
 /// Point indices reference the original PLY file, keeping the .octree file small.
 /// 
-/// File format (Version 4):
+/// File format (Version 5):
 /// - Magic: "OCTR" (4 bytes)
 /// - Version: int32
 /// - Total points in PLY: int32
+/// - Points per node (from build config): int32
 /// - PLY path length + path: int32 + UTF8 bytes
 /// - Property count: int32
 ///   - For each property: length + name (int32 + UTF8 bytes)
@@ -31,7 +32,7 @@ namespace OctreeFlow.IO;
 public class StreamingOctreeSerializer
 {
     private static readonly byte[] Magic = { 0x4F, 0x43, 0x54, 0x52 }; // "OCTR"
-    private const int Version = 4; // Version 4: compact binary format with streaming writes
+    private const int CurrentVersion = 5; // Version 5: added PointsPerNode config
 
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -63,7 +64,12 @@ public class StreamingOctreeSerializer
     /// Point indices reference the original PLY file.
     /// Uses streaming writes to avoid memory issues with large octrees.
     /// </summary>
-    public void SaveOctreeFile(OctreeNode root, PlyIndex plyIndex, string plyPath, string outputPath)
+    /// <param name="root">Root node of the octree.</param>
+    /// <param name="plyIndex">PLY index for metadata.</param>
+    /// <param name="plyPath">Path to the PLY file (stored for reference).</param>
+    /// <param name="outputPath">Output path for the .octree file.</param>
+    /// <param name="pointsPerNode">Points per node from build configuration.</param>
+    public void SaveOctreeFile(OctreeNode root, PlyIndex plyIndex, string plyPath, string outputPath, int pointsPerNode = 1000)
     {
         int totalPoints = plyIndex.VertexCount;
         int nodeCount = root.GetTotalNodeCount();
@@ -74,8 +80,9 @@ public class StreamingOctreeSerializer
 
         // Write header
         writer.Write(Magic);
-        writer.Write(Version);
+        writer.Write(CurrentVersion);
         writer.Write(totalPoints);
+        writer.Write(pointsPerNode);
 
         // Write PLY file path (relative or absolute) for reference
         WriteString(writer, plyPath);
@@ -193,6 +200,7 @@ public class StreamingOctreeSerializer
 
     /// <summary>
     /// Loads the complete octree from a .octree file including point indices.
+    /// Supports version 4 (legacy) and version 5 (with PointsPerNode).
     /// </summary>
     public (OctreeNode? Root, OctreeFileInfo Info) LoadOctreeFile(string filePath)
     {
@@ -206,11 +214,19 @@ public class StreamingOctreeSerializer
 
         // Read version
         int version = reader.ReadInt32();
-        if (version != Version)
-            throw new FormatException($"Unsupported .octree file version: {version} (expected {Version})");
+        if (version < 4 || version > CurrentVersion)
+            throw new FormatException($"Unsupported .octree file version: {version} (supported: 4-{CurrentVersion})");
 
         // Read header info
         int totalPoints = reader.ReadInt32();
+        
+        // Version 5+ has PointsPerNode
+        int pointsPerNode = 0; // 0 means not specified (legacy file)
+        if (version >= 5)
+        {
+            pointsPerNode = reader.ReadInt32();
+        }
+        
         string plyPath = ReadString(reader);
 
         // Read property names
@@ -237,6 +253,7 @@ public class StreamingOctreeSerializer
         {
             Version = version,
             TotalPoints = totalPoints,
+            PointsPerNode = pointsPerNode,
             PlyPath = plyPath,
             PropertyNames = propertyNames,
             Bounds = bounds,
@@ -295,6 +312,11 @@ public class OctreeFileInfo
 {
     public int Version { get; set; }
     public int TotalPoints { get; set; }
+    /// <summary>
+    /// Points per node from build configuration.
+    /// 0 if not specified (legacy v4 files).
+    /// </summary>
+    public int PointsPerNode { get; set; }
     public string PlyPath { get; set; } = "";
     public List<string> PropertyNames { get; set; } = new();
     public BoundingBox Bounds { get; set; }
