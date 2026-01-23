@@ -4,47 +4,44 @@ using System.Collections.Concurrent;
 namespace OctreeFlow.Api;
 
 /// <summary>
-/// Manages buffer sectors for point cloud data with VARIABLE-SIZE sectors.
-/// Each sector holds exactly the points its node has - no wasted space.
+/// Manages buffer sectors for point cloud data.
+/// Handles sector allocation with LRU eviction.
 /// Outputs data ready for vvvv gamma's DynamicBufferAdvanced.
 /// 
 /// Usage:
-/// 1. Create with max buffer capacity
+/// 1. Create with configuration
 /// 2. Call Update() each frame with desired nodes
-/// 3. Use the result to upload data to your buffers
+/// 3. Use the result to upload new sectors to your buffers
 /// 4. Use ActiveSectors for rendering dispatch
 /// </summary>
 public class SectorManager : IDisposable
 {
     private readonly CacheManager _cache;
-    private readonly long _maxBufferCapacityPoints; // Max points that fit in buffer
+    private readonly BufferConfiguration _config;
 
-    // Variable-size sector state - each node uses only the space it needs
-    private readonly Dictionary<string, VariableSector> _activeNodes = new();
+    // Sector state
+    private readonly Sector[] _sectors;
+    private readonly Dictionary<string, int> _nodeToSector = new();
     private readonly LinkedList<string> _lruList = new();
     private readonly object _lock = new();
     
-    private int _currentOffset = 0; // Current write position in buffer
-    private int _totalPointsInBuffer = 0;
-    
     // Mutable output list for NewSectors
     private readonly List<SectorData> _newSectorsList = new();
+    
+    // Store SectorData for ALL active sectors (keyed by sector index)
+    // This allows GetCombinedAllActiveData() to work correctly
+    private readonly Dictionary<int, SectorData> _activeSectorData = new();
+
+    // Change tracking
+    private readonly List<SectorData> _pendingUploads = new();
+    private readonly List<int> _releasedSectors = new();
 
     // Available features (determined from PLY file)
     private readonly HashSet<string> _availableVector4Features = new();
     private readonly HashSet<string> _availableFloat32Features = new();
 
-    // Diagnostic tracking
-    private string? _lastSkipReason;
-
-    // Current frame's desired set (for eviction protection)
-    private HashSet<string>? _currentDesiredSet;
-
     private int _version;
     private int _frameVersion;
-    
-    // Flag to track if buffer needs compaction
-    private bool _needsCompaction = false;
 
     /// <summary>
     /// Current version (increments on any change).
@@ -52,20 +49,30 @@ public class SectorManager : IDisposable
     public int Version => _version;
 
     /// <summary>
-    /// Maximum buffer capacity in points.
+    /// Buffer configuration.
     /// </summary>
-    public long MaxBufferCapacityPoints => _maxBufferCapacityPoints;
+    public BufferConfiguration Configuration => _config;
 
     /// <summary>
-    /// Number of active nodes in buffer.
+    /// Number of sectors.
     /// </summary>
-    public int ActiveNodeCount
+    public int SectorCount => _config.SectorCount;
+
+    /// <summary>
+    /// Points per sector.
+    /// </summary>
+    public int MaxPointsPerSector => _config.MaxPointsPerSector;
+
+    /// <summary>
+    /// Number of active sectors.
+    /// </summary>
+    public int ActiveSectorCount
     {
         get
         {
             lock (_lock)
             {
-                return _activeNodes.Count;
+                return _sectors.Count(s => s.IsActive);
             }
         }
     }
@@ -79,29 +86,42 @@ public class SectorManager : IDisposable
         {
             lock (_lock)
             {
-                return _totalPointsInBuffer;
+                return _sectors.Where(s => s.IsActive).Sum(s => s.PointCount);
             }
         }
     }
 
     /// <summary>
-    /// Creates a sector manager with variable-size sectors.
+    /// Creates a sector manager.
     /// </summary>
     /// <param name="cache">RAM cache to read point data from.</param>
-    /// <param name="maxBufferCapacityPoints">Maximum points that can fit in buffer.</param>
-    public SectorManager(CacheManager cache, long maxBufferCapacityPoints)
+    /// <param name="config">Buffer configuration.</param>
+    public SectorManager(CacheManager cache, BufferConfiguration config)
     {
         _cache = cache;
-        _maxBufferCapacityPoints = maxBufferCapacityPoints;
+        _config = config;
+
+        _sectors = new Sector[config.SectorCount];
+        for (int i = 0; i < config.SectorCount; i++)
+        {
+            _sectors[i] = new Sector
+            {
+                Index = i,
+                ByteOffsetVector4 = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerVector4,
+                ByteOffsetFloat = i * config.MaxPointsPerSector * BufferConfiguration.BytesPerFloat,
+                IsActive = false
+            };
+        }
     }
 
     /// <summary>
-    /// Creates a sector manager from buffer configuration (for backwards compatibility).
+    /// Creates a sector manager with default configuration.
     /// </summary>
     /// <param name="cache">RAM cache to read point data from.</param>
-    /// <param name="config">Buffer configuration - uses TotalCapacity as max points.</param>
-    public SectorManager(CacheManager cache, BufferConfiguration config)
-        : this(cache, config.TotalCapacity)
+    /// <param name="bufferSizeBytes">Buffer size in bytes.</param>
+    /// <param name="maxPointsPerSector">Maximum points per sector.</param>
+    public SectorManager(CacheManager cache, long bufferSizeBytes, int maxPointsPerSector = 65536)
+        : this(cache, BufferConfiguration.FromBufferSize(bufferSizeBytes, maxPointsPerSector))
     {
     }
 
@@ -125,7 +145,7 @@ public class SectorManager : IDisposable
 
     /// <summary>
     /// Updates the buffer state to match the desired node list.
-    /// Uses VARIABLE-SIZE sectors - each node uses only the space it needs.
+    /// Call this each frame with the nodes you want in the buffer.
     /// Returns data to upload and current sector states.
     /// </summary>
     /// <param name="desiredNodes">Nodes that should be in buffer (in priority order - first = highest priority).</param>
@@ -137,90 +157,63 @@ public class SectorManager : IDisposable
 
         lock (_lock)
         {
+            _pendingUploads.Clear();
+            _releasedSectors.Clear();
             _newSectorsList.Clear();
-            _lastSkipReason = null;
             _frameVersion++;
 
             var desiredSet = new HashSet<string>();
             var orderedNodes = desiredNodes.ToList();
 
-            // Build desired set and calculate total points needed
-            int totalPointsNeeded = 0;
+            // Build desired set
             foreach (var node in orderedNodes)
             {
                 desiredSet.Add(node.Id);
-                
-                // Get point count from cache if not already loaded
-                if (!_activeNodes.ContainsKey(node.Id))
-                {
-                    var pointData = _cache.GetPointData(node.Id);
-                    if (pointData != null)
-                    {
-                        totalPointsNeeded += pointData.Length;
-                    }
-                }
-                else
-                {
-                    totalPointsNeeded += _activeNodes[node.Id].PointCount;
-                }
             }
 
             // Release nodes that are no longer desired
-            var toRelease = _activeNodes.Keys
+            var toRelease = _nodeToSector.Keys
                 .Where(id => !desiredSet.Contains(id))
                 .ToList();
 
             foreach (var nodeId in toRelease)
             {
-                ReleaseNodeInternal(nodeId);
+                ReleaseSectorInternal(nodeId);
                 result.NodesReleased++;
             }
 
-            // Store desired set for reference
-            _currentDesiredSet = desiredSet;
-
-            // Check if we need to rebuild the buffer (nodes changed)
-            bool needsRebuild = toRelease.Count > 0 || 
-                orderedNodes.Any(n => !_activeNodes.ContainsKey(n.Id));
-
-            if (needsRebuild)
+            // Load new nodes (in priority order)
+            foreach (var node in orderedNodes)
             {
-                // Rebuild buffer from scratch with all desired nodes
-                RebuildBuffer(orderedNodes, result);
-            }
-            else
-            {
-                // No changes - just update LRU
-                foreach (var node in orderedNodes)
+                if (_nodeToSector.ContainsKey(node.Id))
                 {
-                    if (_activeNodes.ContainsKey(node.Id))
+                    // Already loaded - just touch LRU
+                    TouchLru(node.Id);
+                    result.NodesAlreadyLoaded++;
+                }
+                else
+                {
+                    // Try to load
+                    var sectorData = TryLoadNode(node);
+                    if (sectorData != null)
                     {
-                        TouchLru(node.Id);
-                        result.NodesAlreadyLoaded++;
+                        _pendingUploads.Add(sectorData);
+                        _newSectorsList.Add(sectorData);
+                        result.NodesLoaded++;
+                    }
+                    else
+                    {
+                        result.NodesSkipped++;
                     }
                 }
             }
 
-            _currentDesiredSet = null;
-
-            // Build result
             result.NewSectors = _newSectorsList;
-            result.AllActiveSectors = _activeNodes.Values
-                .Select(v => v.SectorData)
-                .Where(s => s != null)
-                .Cast<SectorData>()
-                .ToList();
+            result.AllActiveSectors = _activeSectorData.Values.ToList();
+            result.ReleasedSectors = _releasedSectors.ToArray();
             result.ActiveSectors = GetActiveSectorsInternal();
             result.Version = _version;
-            result.TotalPointsInBuffer = _totalPointsInBuffer;
-            
-            // Diagnostic info
-            result.TruncatedNodes = 0; // No truncation with variable sectors!
-            result.TruncatedPoints = 0;
-            result.LastSkipReason = _lastSkipReason;
-            result.MaxPointsPerSector = 0; // Not applicable
-            result.AvailableSectors = (int)_maxBufferCapacityPoints; // Total capacity
-            result.UsedSectors = _activeNodes.Count;
+            result.TotalPointsInBuffer = _sectors.Where(s => s.IsActive).Sum(s => s.PointCount);
         }
 
         sw.Stop();
@@ -230,82 +223,112 @@ public class SectorManager : IDisposable
     }
 
     /// <summary>
-    /// Rebuilds the buffer from scratch with the given nodes.
-    /// Packs nodes contiguously from offset 0.
+    /// Tries to load a node. Evicts LRU if needed.
     /// </summary>
-    private void RebuildBuffer(List<NodeInfo> orderedNodes, BufferUpdateResult result)
+    private SectorData? TryLoadNode(NodeInfo node)
     {
-        // Clear current state
-        _activeNodes.Clear();
-        _lruList.Clear();
-        _currentOffset = 0;
-        _totalPointsInBuffer = 0;
+        // Check if in cache
+        var pointData = _cache.GetPointData(node.Id);
+        if (pointData == null)
+        {
+            // Not in cache - can't load
+            return null;
+        }
+
+        // Truncate if node has more points than sector can hold
+        int pointCount = Math.Min(pointData.Length, _config.MaxPointsPerSector);
+        if (pointData.Length > _config.MaxPointsPerSector)
+        {
+            // Create truncated copy
+            var truncated = new PointData[pointCount];
+            Array.Copy(pointData, truncated, pointCount);
+            pointData = truncated;
+        }
+
+        // Find or make a sector
+        int sectorIndex = FindEmptySector();
+        if (sectorIndex < 0)
+        {
+            // Try to evict LRU
+            sectorIndex = EvictLruSector();
+        }
+
+        if (sectorIndex < 0)
+        {
+            // No space and nothing to evict
+            return null;
+        }
+
+        // Allocate sector
+        var sector = _sectors[sectorIndex];
+        sector.IsActive = true;
+        sector.NodeId = node.Id;
+        sector.PointCount = pointCount;
+        sector.Level = node.Level;
+        sector.FrameLoaded = _frameVersion;
+
+        _nodeToSector[node.Id] = sectorIndex;
+        AddToLru(node.Id);
         _version++;
 
-        // Load nodes in order until buffer is full
-        foreach (var node in orderedNodes)
-        {
-            var pointData = _cache.GetPointData(node.Id);
-            if (pointData == null)
-            {
-                _lastSkipReason = $"Node {node.Id} not in cache";
-                result.NodesSkipped++;
-                continue;
-            }
-
-            int pointCount = pointData.Length;
-
-            // Check if this node fits in remaining buffer space
-            if (_totalPointsInBuffer + pointCount > _maxBufferCapacityPoints)
-            {
-                _lastSkipReason = $"Buffer full: {_totalPointsInBuffer}/{_maxBufferCapacityPoints} points, " +
-                    $"cannot fit node {node.Id} with {pointCount} points";
-                result.NodesSkipped++;
-                continue;
-            }
-
-            // Calculate byte offsets
-            int byteOffsetVector4 = _currentOffset * 16; // 16 bytes per Vector4
-            int byteOffsetFloat = _currentOffset * 4;    // 4 bytes per float
-
-            // Create sector data
-            var sectorData = SectorData.FromPointData(
-                _activeNodes.Count, // Use node index as "sector index"
-                byteOffsetVector4,
-                byteOffsetFloat,
-                node.Id,
-                node.Level,
-                pointData,
-                _availableVector4Features,
-                _availableFloat32Features);
-
-            // Create variable sector
-            var sector = new VariableSector
-            {
-                NodeId = node.Id,
-                StartOffset = _currentOffset,
-                PointCount = pointCount,
-                Level = node.Level,
-                SectorData = sectorData
-            };
-
-            _activeNodes[node.Id] = sector;
-            _lruList.AddLast(node.Id);
-            _newSectorsList.Add(sectorData);
-
-            _currentOffset += pointCount;
-            _totalPointsInBuffer += pointCount;
-            result.NodesLoaded++;
-        }
+        // Create sector data for upload
+        var sectorData = SectorData.FromPointData(
+            sectorIndex,
+            sector.ByteOffsetVector4,
+            sector.ByteOffsetFloat,
+            node.Id,
+            node.Level,
+            pointData,
+            _availableVector4Features,
+            _availableFloat32Features);
+        
+        // Store in active sector data for GetCombinedAllActiveData()
+        _activeSectorData[sectorIndex] = sectorData;
+        
+        return sectorData;
     }
 
-    private void ReleaseNodeInternal(string nodeId)
+    private int FindEmptySector()
     {
-        if (_activeNodes.TryGetValue(nodeId, out var sector))
+        for (int i = 0; i < _sectors.Length; i++)
         {
-            _activeNodes.Remove(nodeId);
+            if (!_sectors[i].IsActive)
+                return i;
+        }
+        return -1;
+    }
+
+    private int EvictLruSector()
+    {
+        if (_lruList.Count == 0)
+            return -1;
+
+        // Get least recently used
+        var lruNodeId = _lruList.First?.Value;
+        if (lruNodeId == null)
+            return -1;
+
+        // Release it
+        if (_nodeToSector.TryGetValue(lruNodeId, out int sectorIndex))
+        {
+            ReleaseSectorInternal(lruNodeId);
+            return sectorIndex;
+        }
+
+        return -1;
+    }
+
+    private void ReleaseSectorInternal(string nodeId)
+    {
+        if (_nodeToSector.TryGetValue(nodeId, out int sectorIndex))
+        {
+            _sectors[sectorIndex].IsActive = false;
+            _sectors[sectorIndex].NodeId = null;
+            _sectors[sectorIndex].PointCount = 0;
+            _nodeToSector.Remove(nodeId);
             RemoveFromLru(nodeId);
-            _needsCompaction = true;
+            _releasedSectors.Add(sectorIndex);
+            _activeSectorData.Remove(sectorIndex); // Remove stored sector data
             _version++;
         }
     }
@@ -320,6 +343,11 @@ public class SectorManager : IDisposable
         }
     }
 
+    private void AddToLru(string nodeId)
+    {
+        _lruList.AddLast(nodeId);
+    }
+
     private void RemoveFromLru(string nodeId)
     {
         _lruList.Remove(nodeId);
@@ -327,16 +355,16 @@ public class SectorManager : IDisposable
 
     private SectorInfo[] GetActiveSectorsInternal()
     {
-        int index = 0;
-        return _activeNodes.Values
+        return _sectors
+            .Where(s => s.IsActive)
             .Select(s => new SectorInfo
             {
-                SectorIndex = index++,
-                ByteOffsetVector4 = s.StartOffset * 16,
-                ByteOffsetFloat = s.StartOffset * 4,
-                StartIndex = s.StartOffset,
+                SectorIndex = s.Index,
+                ByteOffsetVector4 = s.ByteOffsetVector4,
+                ByteOffsetFloat = s.ByteOffsetFloat,
+                StartIndex = s.Index * _config.MaxPointsPerSector,
                 PointCount = s.PointCount,
-                NodeId = s.NodeId,
+                NodeId = s.NodeId!,
                 Level = s.Level
             })
             .ToArray();
@@ -349,7 +377,7 @@ public class SectorManager : IDisposable
     {
         lock (_lock)
         {
-            return _activeNodes.ContainsKey(nodeId);
+            return _nodeToSector.ContainsKey(nodeId);
         }
     }
 
@@ -360,43 +388,64 @@ public class SectorManager : IDisposable
     {
         lock (_lock)
         {
-            return _activeNodes.Keys.ToArray();
+            return _nodeToSector.Keys.ToArray();
         }
     }
 
     /// <summary>
     /// Gets the sector index for a node, or -1 if not loaded.
-    /// With variable sectors, returns the node's position in the active list.
     /// </summary>
     public int GetSectorFor(string nodeId)
     {
         lock (_lock)
         {
-            if (!_activeNodes.ContainsKey(nodeId))
-                return -1;
-            
-            int index = 0;
-            foreach (var key in _activeNodes.Keys)
-            {
-                if (key == nodeId)
-                    return index;
-                index++;
-            }
-            return -1;
+            return _nodeToSector.TryGetValue(nodeId, out int idx) ? idx : -1;
         }
     }
 
     /// <summary>
-    /// Clears all nodes from buffer.
+    /// Gets info about a specific sector.
+    /// </summary>
+    public SectorInfo? GetSectorInfo(int sectorIndex)
+    {
+        lock (_lock)
+        {
+            if (sectorIndex < 0 || sectorIndex >= _sectors.Length)
+                return null;
+
+            var s = _sectors[sectorIndex];
+            if (!s.IsActive)
+                return null;
+
+            return new SectorInfo
+            {
+                SectorIndex = s.Index,
+                ByteOffsetVector4 = s.ByteOffsetVector4,
+                ByteOffsetFloat = s.ByteOffsetFloat,
+                StartIndex = s.Index * _config.MaxPointsPerSector,
+                PointCount = s.PointCount,
+                NodeId = s.NodeId!,
+                Level = s.Level
+            };
+        }
+    }
+
+    /// <summary>
+    /// Clears all sectors.
     /// </summary>
     public void Clear()
     {
         lock (_lock)
         {
-            _activeNodes.Clear();
+            foreach (var sector in _sectors)
+            {
+                sector.IsActive = false;
+                sector.NodeId = null;
+                sector.PointCount = 0;
+            }
+            _nodeToSector.Clear();
             _lruList.Clear();
-            _currentOffset = 0;
-            _totalPointsInBuffer = 0;
+            _activeSectorData.Clear();
             _version++;
         }
     }
@@ -409,11 +458,7 @@ public class SectorManager : IDisposable
     {
         lock (_lock)
         {
-            return _activeNodes.Values
-                .Select(v => v.SectorData)
-                .Where(s => s != null)
-                .Cast<SectorData>()
-                .ToList();
+            return _activeSectorData.Values.ToList();
         }
     }
 
@@ -422,15 +467,15 @@ public class SectorManager : IDisposable
         Clear();
     }
 
-    /// <summary>
-    /// Variable-size sector that holds exactly the points a node has.
-    /// </summary>
-    private class VariableSector
+    private class Sector
     {
-        public required string NodeId;
-        public int StartOffset; // Element offset in buffer
+        public int Index;
+        public int ByteOffsetVector4;
+        public int ByteOffsetFloat;
+        public bool IsActive;
+        public string? NodeId;
         public int PointCount;
         public int Level;
-        public SectorData? SectorData;
+        public int FrameLoaded;
     }
 }
