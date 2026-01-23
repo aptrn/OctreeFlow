@@ -287,7 +287,7 @@ class Program
         {
             if (plyIndex != null)
             {
-                serializer.SaveOctreeFile(root, plyIndex, input.FullName, output + ".octree", pointsPerNode);
+                serializer.SaveOctreeFile(root, plyIndex, input.FullName, output + ".octree");
             }
             stopwatch.Stop();
             Console.ForegroundColor = ConsoleColor.Green;
@@ -378,7 +378,6 @@ class Program
                     Console.WriteLine("File Info:");
                     Console.WriteLine($"  Version:        {fileInfo.Version}");
                     Console.WriteLine($"  Total points:   {fileInfo.TotalPoints:N0}");
-                    Console.WriteLine($"  Points/node:    {(fileInfo.PointsPerNode > 0 ? fileInfo.PointsPerNode.ToString("N0") : "not specified (legacy file)")}");
                     Console.WriteLine($"  PLY path:       {fileInfo.PlyPath}");
                     Console.WriteLine($"  Properties:     {string.Join(", ", fileInfo.PropertyNames)}");
                     Console.WriteLine($"  Bounds:         {fileInfo.Bounds.Minimum} - {fileInfo.Bounds.Maximum}");
@@ -484,10 +483,10 @@ class Program
             getDefaultValue: () => 256,
             description: "RAM cache size in MB");
 
-        var bufferSizeOption = new Option<int>(
-            aliases: new[] { "--buffer-size", "-b" },
-            getDefaultValue: () => 512,
-            description: "Maximum size per buffer in MB (e.g., 512, 1024, 2048)");
+        var gpuSizeOption = new Option<int>(
+            aliases: new[] { "--gpu-size", "-g" },
+            getDefaultValue: () => 128,
+            description: "GPU buffer size in MB");
 
         var traverseCommand = new Command("traverse", "Traverse an octree and demonstrate the API")
         {
@@ -495,7 +494,7 @@ class Program
             plyOption,
             maxDepthOption,
             cacheSizeOption,
-            bufferSizeOption
+            gpuSizeOption
         };
 
         traverseCommand.SetHandler(async (context) =>
@@ -504,9 +503,9 @@ class Program
             var ply = context.ParseResult.GetValueForOption(plyOption)!;
             var maxDepth = context.ParseResult.GetValueForOption(maxDepthOption);
             var cacheSize = context.ParseResult.GetValueForOption(cacheSizeOption);
-            var bufferSize = context.ParseResult.GetValueForOption(bufferSizeOption);
+            var gpuSize = context.ParseResult.GetValueForOption(gpuSizeOption);
 
-            await DemoTraversal(octree, ply, maxDepth, cacheSize, bufferSize);
+            await DemoTraversal(octree, ply, maxDepth, cacheSize, gpuSize);
         });
 
         return traverseCommand;
@@ -517,7 +516,7 @@ class Program
         FileInfo plyFile,
         int maxDepth,
         int cacheSizeMB,
-        int bufferSizeMB)
+        int gpuSizeMB)
     {
         if (!octreeFile.Exists)
         {
@@ -544,7 +543,7 @@ class Program
         Console.WriteLine($"PLY:         {plyFile.FullName}");
         Console.WriteLine($"Max depth:   {maxDepth}");
         Console.WriteLine($"Cache size:  {cacheSizeMB} MB");
-        Console.WriteLine($"Buffer size: {bufferSizeMB} MB per buffer");
+        Console.WriteLine($"GPU size:    {gpuSizeMB} MB");
         Console.WriteLine();
 
         try
@@ -552,11 +551,14 @@ class Program
             Console.Write("Initializing reader... ");
             var sw = System.Diagnostics.Stopwatch.StartNew();
             
+            // Convert MB to bytes for the API
+            long gpuSizeBytes = (long)gpuSizeMB * 1024 * 1024;
+            
             using var reader = new OctreeFlowReader(
                 octreeFile.FullName,
                 plyFile.FullName,
                 cacheSizeMB,
-                bufferSizeMB);
+                gpuSizeBytes);
 
             await reader.InitializeAsync((status, current, total) =>
             {
@@ -571,14 +573,6 @@ class Program
             Console.WriteLine($"Total nodes:  {reader.TotalNodes:N0}");
             Console.WriteLine($"Total points: {reader.TotalPoints:N0}");
             Console.WriteLine($"Bounds:       {reader.Bounds.Minimum} - {reader.Bounds.Maximum}");
-            Console.WriteLine();
-            
-            Console.WriteLine("Buffer configuration:");
-            Console.WriteLine($"  Points/node (info):{reader.PointsPerNode:N0} ({reader.PointsPerNodeSource})");
-            Console.WriteLine($"  Max buffer size:   {reader.MaxBufferSizeMB} MB per buffer");
-            Console.WriteLine($"  Buffer capacity:   {reader.BufferCapacityPoints:N0} points max");
-            Console.WriteLine($"  Vector4 buffer:    {FormatFileSize(reader.BufferSizeBytesVector4)}");
-            Console.WriteLine($"  Float32 buffer:    {FormatFileSize(reader.BufferSizeBytesFloat32)}");
             Console.WriteLine();
 
             // Display available features

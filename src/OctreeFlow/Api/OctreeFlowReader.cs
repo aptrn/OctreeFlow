@@ -23,8 +23,8 @@ public class OctreeFlowReader : IDisposable
     private readonly string _octreePath;
     private readonly string _plyPath;
     private readonly int _cacheSizeMB;
-    private readonly int _maxBufferSizeMB;
-    private readonly int? _pointsPerNodeOverride;
+    private readonly long _bufferSizeBytes;
+    private readonly int _maxPointsPerSector;
 
     private CacheManager? _cache;
     private SectorManager? _sectorManager;
@@ -34,8 +34,6 @@ public class OctreeFlowReader : IDisposable
     private readonly Dictionary<string, NodeInfo> _nodeInfoCache = new();
     private Dictionary<string, Vector4[]>? _featuresVector4;
     private Dictionary<string, float[]>? _featuresFloat32;
-    
-    private int _pointsPerNode; // Resolved from file or override (informational only)
 
     private int _traversalVersion;
     private bool _isInitialized;
@@ -71,9 +69,9 @@ public class OctreeFlowReader : IDisposable
     public SectorManager? SectorManager => _sectorManager;
 
     /// <summary>
-    /// Maximum buffer capacity in points (from SectorManager).
+    /// Buffer configuration.
     /// </summary>
-    public long MaxBufferCapacity => _sectorManager?.MaxBufferCapacityPoints ?? 0;
+    public BufferConfiguration? BufferConfig => _sectorManager?.Configuration;
 
     /// <summary>
     /// Whether the reader has been initialized.
@@ -96,50 +94,31 @@ public class OctreeFlowReader : IDisposable
     public int TotalNodes => _fileInfo?.NodeCount ?? 0;
 
     /// <summary>
-    /// Points per node from octree file (informational only - not used for buffer sizing).
-    /// With variable-size sectors, each node uses exactly the space it needs.
+    /// Points per sector.
     /// </summary>
-    public int PointsPerNode => _pointsPerNode;
+    public int MaxPointsPerSector => _maxPointsPerSector;
 
     /// <summary>
-    /// Source of the PointsPerNode value: "override", "file", or "auto-detected".
+    /// Number of sectors in buffer.
     /// </summary>
-    public string PointsPerNodeSource => _pointsPerNodeOverride.HasValue ? "override" 
-        : (_fileInfo?.PointsPerNode > 0 ? "file" : "auto-detected");
+    public int SectorCount => _sectorManager?.SectorCount ?? 0;
 
     /// <summary>
-    /// Maximum buffer size per buffer in megabytes (as specified).
+    /// Total buffer capacity in points.
     /// </summary>
-    public int MaxBufferSizeMB => _maxBufferSizeMB;
+    public int BufferCapacity => BufferConfig?.TotalCapacity ?? 0;
 
     /// <summary>
-    /// Maximum buffer capacity in points.
-    /// This is the limit - total points across all active nodes cannot exceed this.
-    /// </summary>
-    public long BufferCapacityPoints => (long)_maxBufferSizeMB * 1024 * 1024 / 16;
-
-    /// <summary>
-    /// Number of nodes currently in buffer.
-    /// </summary>
-    public int ActiveNodeCount => _sectorManager?.ActiveNodeCount ?? 0;
-
-    /// <summary>
-    /// Total points currently in buffer.
-    /// </summary>
-    public int CurrentPointsInBuffer => _sectorManager?.TotalPointsInBuffer ?? 0;
-
-    /// <summary>
-    /// Total buffer size in bytes for Vector4 buffers (Position, Colors, Normals).
+    /// Total buffer size in bytes for Vector4 buffers.
     /// Use this to create your DynamicBufferAdvanced&lt;Vector4&gt; with the correct size.
     /// </summary>
-    public long BufferSizeBytesVector4 => (long)_maxBufferSizeMB * 1024 * 1024;
+    public long BufferSizeBytesVector4 => BufferConfig?.TotalBytesVector4 ?? 0;
 
     /// <summary>
-    /// Total buffer size in bytes for Float32 buffers (Intensity, scalars).
+    /// Total buffer size in bytes for Float32 buffers.
     /// Use this to create your DynamicBufferAdvanced&lt;float&gt; with the correct size.
-    /// (1/4 the size of Vector4 buffers since float is 4 bytes vs 16 bytes).
     /// </summary>
-    public long BufferSizeBytesFloat32 => (long)_maxBufferSizeMB * 1024 * 1024 / 4;
+    public long BufferSizeBytesFloat32 => BufferConfig?.TotalBytesFloat ?? 0;
 
     /// <summary>
     /// Available properties from the PLY file.
@@ -237,20 +216,20 @@ public class OctreeFlowReader : IDisposable
     /// <param name="octreePath">Path to the .octree file.</param>
     /// <param name="plyPath">Path to the .ply file.</param>
     /// <param name="cacheSizeMB">RAM cache size in megabytes.</param>
-    /// <param name="maxBufferSizeMB">Maximum size per buffer in megabytes (e.g., 512, 1024, 2048). Determines how many nodes can be active simultaneously.</param>
-    /// <param name="pointsPerNodeOverride">Optional override for points per node. If null, reads from octree file (or uses default 1000 for legacy files).</param>
+    /// <param name="bufferSizeBytes">Buffer size in bytes (for sector calculation).</param>
+    /// <param name="maxPointsPerSector">Maximum points per sector.</param>
     public OctreeFlowReader(
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int maxBufferSizeMB = 512,
-        int? pointsPerNodeOverride = null)
+        long bufferSizeBytes = 268435456, // 256 MB default
+        int maxPointsPerSector = 65536)
     {
         _octreePath = octreePath;
         _plyPath = plyPath;
         _cacheSizeMB = cacheSizeMB;
-        _maxBufferSizeMB = maxBufferSizeMB;
-        _pointsPerNodeOverride = pointsPerNodeOverride;
+        _bufferSizeBytes = bufferSizeBytes;
+        _maxPointsPerSector = maxPointsPerSector;
     }
 
     /// <summary>
@@ -260,10 +239,10 @@ public class OctreeFlowReader : IDisposable
         string octreePath,
         string plyPath,
         int cacheSizeMB = 512,
-        int maxBufferSizeMB = 512,
-        int? pointsPerNodeOverride = null)
+        long bufferSizeBytes = 268435456, // 256 MB default
+        int maxPointsPerSector = 65536)
     {
-        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, maxBufferSizeMB, pointsPerNodeOverride);
+        var reader = new OctreeFlowReader(octreePath, plyPath, cacheSizeMB, bufferSizeBytes, maxPointsPerSector);
         reader.Initialize();
         return reader;
     }
@@ -282,28 +261,6 @@ public class OctreeFlowReader : IDisposable
         _root = root ?? throw new InvalidOperationException("Failed to load octree file");
         _fileInfo = info;
 
-        // Resolve points per node: override > file > auto-detect from structure
-        if (_pointsPerNodeOverride.HasValue)
-        {
-            _pointsPerNode = _pointsPerNodeOverride.Value;
-        }
-        else if (info.PointsPerNode > 0)
-        {
-            _pointsPerNode = info.PointsPerNode;
-        }
-        else
-        {
-            // Legacy file without PointsPerNode - auto-detect from octree structure
-            // Find the maximum point count in any node
-            _pointsPerNode = GetMaxPointsInAnyNode(_root);
-            if (_pointsPerNode <= 0) _pointsPerNode = 1000; // Fallback
-        }
-
-        // Calculate max buffer capacity in points
-        // Using Vector4 size (16 bytes) as the reference since it's the largest element type
-        long bufferSizeBytes = (long)_maxBufferSizeMB * 1024 * 1024;
-        long maxBufferCapacityPoints = bufferSizeBytes / 16; // 16 bytes per Vector4
-
         // Build PLY index (lightweight - just parse header)
         _plyIndex = new PlyIndex(_plyPath);
         _plyIndex.BuildIndexHeaderOnly();
@@ -314,12 +271,12 @@ public class OctreeFlowReader : IDisposable
         // Create RAM cache
         _cache = new CacheManager(_cacheSizeMB);
 
-        // Create sector manager with variable-size sectors
-        // Just pass the max capacity in points - no fixed sector size needed!
-        _sectorManager = new SectorManager(_cache, maxBufferCapacityPoints);
+        // Create sector manager (need this before BuildFeatureInfo for buffer capacity)
+        var config = BufferConfiguration.FromBufferSize(_bufferSizeBytes, _maxPointsPerSector);
+        _sectorManager = new SectorManager(_cache, config);
 
         // Build feature info dictionaries with correctly sized arrays
-        BuildFeatureInfo((int)maxBufferCapacityPoints);
+        BuildFeatureInfo(config.TotalCapacity);
 
         // Tell SectorManager which features are available (so it only creates matching data)
         _sectorManager.SetAvailableFeatures(
@@ -423,20 +380,6 @@ public class OctreeFlowReader : IDisposable
         {
             BuildNodeInfoCache(child);
         }
-    }
-
-    /// <summary>
-    /// Finds the maximum number of points in any node of the octree.
-    /// Used to auto-detect pointsPerNode for legacy files.
-    /// </summary>
-    private int GetMaxPointsInAnyNode(OctreeNode node)
-    {
-        int max = node.PointIndices?.Count ?? 0;
-        foreach (var child in node.Children)
-        {
-            max = Math.Max(max, GetMaxPointsInAnyNode(child));
-        }
-        return max;
     }
 
     /// <summary>
