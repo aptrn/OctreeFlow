@@ -14,11 +14,10 @@
       </p:NodeReference>
       <Patch Id="FLJnZkemk89LPTMrEuEexu">
         <Canvas Id="KPh54JDUj01LHWE5RxZqBa" CanvasType="Group">
-          <Node Bounds="603,701,125,26" Id="MupCtcZtjHoQVLKbee2F8N">
-            <p:NodeReference LastCategoryFullName="Main.OctreeFlow" LastDependency="test_octreeflow.vl">
+          <Node Bounds="43,512,125,19" Id="MupCtcZtjHoQVLKbee2F8N">
+            <p:NodeReference LastCategoryFullName="OctreeFlow" LastDependency="Octreeflow.vl">
               <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
-              <CategoryReference Kind="ClassType" Name="OctreeFlow" NeedsToBeDirectParent="true" />
-              <Choice Kind="OperationCallFlag" Name="Create" />
+              <Choice Kind="ProcessAppFlag" Name="OctreeFlow" />
             </p:NodeReference>
             <Pin Id="Ov9GqUJEsVMQCU2uV0LgbU" Name="Output" Kind="StateOutputPin" />
             <Pin Id="KkUVKSmnbk6PosDdSOLIEE" Name="Node Context" Kind="InputPin" IsHidden="true" />
@@ -32,17 +31,17 @@
             <Pin Id="HnazkKlry7DQXt896qPE2r" Name="Max Buffer Size MB" Kind="InputPin" />
             <Pin Id="C0CgLzaR8w4NFWXLC6mRMZ" Name="Points Per Node Override" Kind="InputPin" />
           </Node>
-          <Pad Id="OEZQtTi3hezN1vt0T2Vawi" Comment="Octree Path" Bounds="605,552,326,16" ShowValueBox="true" isIOBox="true" Value="..\..\..\octreeflow_ale\test.octree">
+          <Pad Id="OEZQtTi3hezN1vt0T2Vawi" Comment="Octree Path" Bounds="45,410,326,16" ShowValueBox="true" isIOBox="true" Value="..\..\..\octreeflow_ale\test.octree">
             <p:TypeAnnotation LastCategoryFullName="IO" LastDependency="VL.CoreLib.vl">
               <Choice Kind="TypeFlag" Name="Path" />
             </p:TypeAnnotation>
           </Pad>
-          <Pad Id="N0ebU48svj4LZwfOzPLUEf" Comment="Ply Path" Bounds="635,582,314,15" ShowValueBox="true" isIOBox="true" Value="..\..\..\octreeflow_ale\test.ply">
+          <Pad Id="N0ebU48svj4LZwfOzPLUEf" Comment="Ply Path" Bounds="75,430,314,15" ShowValueBox="true" isIOBox="true" Value="..\..\..\octreeflow_ale\test.ply">
             <p:TypeAnnotation LastCategoryFullName="IO" LastDependency="VL.CoreLib.vl">
               <Choice Kind="TypeFlag" Name="Path" />
             </p:TypeAnnotation>
           </Pad>
-          <Pad Id="HBfYAItLRrjLqFxWOGtAox" SlotId="VHelRmoZzXyPcJzNy8bwiy" Bounds="665,813" />
+          <Pad Id="HBfYAItLRrjLqFxWOGtAox" SlotId="VHelRmoZzXyPcJzNy8bwiy" Bounds="105,630" />
           <Node Bounds="-910,3200,245,19" Id="RTLGpFWa2mHPtaGGFMv8vZ">
             <p:NodeReference LastCategoryFullName="Stride" LastDependency="VL.Stride.vl">
               <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
@@ -945,7 +944,7 @@
             <Pin Id="T3e5dUeXLbsLJ0YZU7UR9I" Name="Center" Kind="OutputPin" />
           </Node>
           <Pad Id="GQgB9raXPb7Qag20vXVRhs" SlotId="VHelRmoZzXyPcJzNy8bwiy" Bounds="237,2630" Value="0, 0, 0" />
-          <Pad Id="LKsAxjMK26XMIqI2RusAsa" Comment="Cache Size MB" Bounds="669,609,77,15" ShowValueBox="true" isIOBox="true" Value="8192">
+          <Pad Id="LKsAxjMK26XMIqI2RusAsa" Comment="Cache Size MB" Bounds="105,450,77,15" ShowValueBox="true" isIOBox="true" Value="8192">
             <p:TypeAnnotation LastCategoryFullName="Primitive" LastDependency="VL.CoreLib.vl">
               <Choice Kind="TypeFlag" Name="Integer32" />
             </p:TypeAnnotation>
@@ -989,10 +988,10 @@
             </p:TypeAnnotation>
           </Pad>
           <Pad Id="TYPeRMvWABHQBtajiUTIZ6" SlotId="DyvPxoZSoYUPlfuzQnivr2" Bounds="85,1969" />
-          <Pad Id="TxO0KT9DusMNHC3Bkwj4hS" SlotId="ITO0vsucOPnNX1LA0Ccwd1" Bounds="708,861" />
-          <Pad Id="T5Q5RnXsdxCMSsB5AvvQii" SlotId="VoX1vuz6VIiNzs5U9q8GRa" Bounds="725,881" />
-          <Pad Id="Pxp2tQhwShsMYceYFvGcKI" SlotId="VXlMXHOKCgRM63OaBJXNdj" Bounds="645,792" />
-          <Pad Id="GfU1p1wx5kRQMXqboATcWw" SlotId="IFb4FQj06vnPLlZBJ3bo3t" Bounds="605,770" />
+          <Pad Id="TxO0KT9DusMNHC3Bkwj4hS" SlotId="ITO0vsucOPnNX1LA0Ccwd1" Bounds="135,651" />
+          <Pad Id="T5Q5RnXsdxCMSsB5AvvQii" SlotId="VoX1vuz6VIiNzs5U9q8GRa" Bounds="165,671" />
+          <Pad Id="Pxp2tQhwShsMYceYFvGcKI" SlotId="VXlMXHOKCgRM63OaBJXNdj" Bounds="75,610" />
+          <Pad Id="GfU1p1wx5kRQMXqboATcWw" SlotId="IFb4FQj06vnPLlZBJ3bo3t" Bounds="45,590" />
           <Pad Id="AlX3rPltcbIO6t5prypeLj" SlotId="M1YkZd9GsBSMt95biOZWdL" Bounds="1634,431" Value="0, 0, 0" />
           <Node Bounds="1367,450,54,26" Id="BiyhuhMKJcFO5okoO9ixv6">
             <p:NodeReference LastCategoryFullName="3D.Frustum" LastDependency="VL.CoreLib.vl">
@@ -1414,7 +1413,7 @@
               <Choice Kind="TypeFlag" Name="Float32" />
             </p:TypeAnnotation>
           </Pad>
-          <Pad Id="CnI3wIod8VmLwFMlPCDzXc" Comment="Scalar Features" Bounds="182,931,266,326" ShowValueBox="true" isIOBox="true">
+          <Pad Id="CnI3wIod8VmLwFMlPCDzXc" Comment="Scalar Features" Bounds="209,711,105,140" ShowValueBox="true" isIOBox="true">
             <p:Value>
               <Item>scalar_planarity</Item>
               <Item>scalar_verticality</Item>
@@ -1795,8 +1794,8 @@
               <Choice Kind="TypeFlag" Name="Boolean" />
             </p:TypeAnnotation>
           </Pad>
-          <Pad Id="VlU6RTJmqNyLJqbZWv2sH4" Comment="Vector Features" Bounds="-26,940,76,84" ShowValueBox="true" isIOBox="true" />
-          <Pad Id="PqhcNF80qL3NQLUdgapIkF" Comment="Max Buffer Size MB" Bounds="695,640,70,15" ShowValueBox="true" isIOBox="true" Value="2048">
+          <Pad Id="VlU6RTJmqNyLJqbZWv2sH4" Comment="Vector Features" Bounds="135,861,76,84" ShowValueBox="true" isIOBox="true" />
+          <Pad Id="PqhcNF80qL3NQLUdgapIkF" Comment="Max Buffer Size MB" Bounds="135,470,70,15" ShowValueBox="true" isIOBox="true" Value="2048">
             <p:TypeAnnotation LastCategoryFullName="Primitive" LastDependency="VL.CoreLib.vl">
               <Choice Kind="TypeFlag" Name="Integer32" />
             </p:TypeAnnotation>
@@ -1835,7 +1834,7 @@
             </Patch>
           </Node>
         </Canvas>
-        <Patch Id="NIYR90WZDmxOmSZNH3KLR8" Name="Create" ParticipatingElements="MupCtcZtjHoQVLKbee2F8N" />
+        <Patch Id="NIYR90WZDmxOmSZNH3KLR8" Name="Create" ParticipatingElements="MupCtcZtjHoQVLKbee2F8N,I5BLlaEalgHLdPzGr7PIHN" />
         <Patch Id="Uhp6v7AOOEmQDuLbbzxQla" Name="Update" ParticipatingElements="S6L9UnrpAmIPzQ05gnqRYT,KHDySzRszLAN9cQ0PPcSo8,TcPAh8Bl50cLxBta9f2I1J,NKu8ChLKhlPLZGjYIXFlAH,UfCV5tqVPQZOqWkw2QVJWm,IsszelJRY70OW2q6jOAb0x,HJBtYjP73FCMSNukVqrLUV,K5v9nfqr2HSQbIKdB2MYFt,SUZuxi80wq8QRkci2A1Roi,BLqMobo2mqTPlFVzjs3kdS,SwntMvH4Y8TN98TRTfECad,RNiDpJENdN7L2dwEEA7bq7,ELF9cvtNRcxPpwICthbfGE,Ka0MkLyRfbIPco4WDHsFXc,DTQhG9H3c4tMnSmlTlsis7,FY2w9flgysuOKzhYeN3qK1,VXmgaY3ua7VPXYgPMUUzES,SrZn51VwfHvLHg83Knok2V,He3vdeWPwr4LRzz75u5Q7f,EZ0HRAkoIehQDdvOql3Led,DNJZ00at9VALDyWzWekk1a,Nwo51hsBpVvPBpAPzxnPM5,SAa2nvJMqSvMWyv2wyV9BO">
           <Pin Id="E33egfcoutKNpJOLx1bQXg" Name="Loading" Kind="OutputPin" />
         </Patch>
