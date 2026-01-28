@@ -2682,7 +2682,7 @@
               <ControlPoint Id="U0hzTZaFaJhPLMhcLTxD31" Bounds="2807,1730" Alignment="Bottom" />
               <ControlPoint Id="Nj7w4A1RmoyPRgS6kM0rga" Bounds="2807,1252" Alignment="Top" />
             </Node>
-            <Node Bounds="1039,3771,242,146" Id="RHL2NvXQSn7MUrUYAtdS7e">
+            <Node Bounds="1029,3757,251,166" Id="RHL2NvXQSn7MUrUYAtdS7e">
               <p:NodeReference LastCategoryFullName="Reactive" LastDependency="VL.CoreLib.vl">
                 <Choice Kind="StatefulRegion" Name="Region (Stateful)" Fixed="true" />
                 <Choice Kind="ProcessAppFlag" Name="AsyncTask" />
@@ -2705,7 +2705,7 @@
                 </Patch>
                 <ControlPoint Id="SM5NInziVl7Nqnj1QtuHmD" Bounds="1043,3779" />
                 <ControlPoint Id="JADu4RN18Z6L1rlu3Uf0Q5" Bounds="1055,3910" />
-                <Node Bounds="1064,3801,205,26" Id="NJuGjmMDLKEOLCB8SDTtzi">
+                <Node Bounds="1064,3780,205,26" Id="NJuGjmMDLKEOLCB8SDTtzi">
                   <p:NodeReference LastCategoryFullName="Main.Octree" LastDependency="test_octreeflow.vl">
                     <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                     <CategoryReference Kind="ClassType" Name="OctreeFlow" NeedsToBeDirectParent="true" />
@@ -2715,14 +2715,26 @@
                   <Pin Id="QJbvfkZhsVzMEjsfhW8Gv6" Name="Traversal Function" Kind="InputPin" />
                   <Pin Id="PwBNEA53IYAMSy8kqFQ8VL" Name="Output" Kind="StateOutputPin" />
                 </Node>
-                <Node Bounds="1064,3851,76,26" Id="BToNrCWcGLKOmYXlBVucVX">
-                  <p:NodeReference LastCategoryFullName="Main.OctreeFlow" LastDependency="test_octreeflow.vl">
-                    <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
-                    <CategoryReference Kind="ClassType" Name="OctreeFlow" NeedsToBeDirectParent="true" />
-                    <Choice Kind="OperationCallFlag" Name="UpdateFrame" />
+                <Node Bounds="1052,3822,100,80" Id="Kn6U69Dh2vAOaIzS1Trxz6">
+                  <p:NodeReference LastCategoryFullName="Primitive" LastDependency="Builtin">
+                    <Choice Kind="StatefulRegion" Name="Region (Stateful)" Fixed="true" />
+                    <CategoryReference Kind="Category" Name="Primitive" />
+                    <Choice Kind="ApplicationStatefulRegion" Name="If" />
                   </p:NodeReference>
-                  <Pin Id="OqyRhzTr3hvQXhZrxNjtwk" Name="Input" Kind="StateInputPin" />
-                  <Pin Id="BnTWoWYIKnvNCOII5Kgyid" Name="Output" Kind="StateOutputPin" />
+                  <Pin Id="VnOtpHRDhIDL5SOmGH6ydF" Name="Condition" Kind="InputPin" />
+                  <Patch Id="JFwU47IOx48QJlPzaxGPXK" ManuallySortedPins="true">
+                    <Patch Id="BFPneASKcAANIQjzK5ll1P" Name="Create" ManuallySortedPins="true" />
+                    <Patch Id="CtqLrnmnLrkNt8tB3UCu9y" Name="Then" ManuallySortedPins="true" />
+                    <Node Bounds="1064,3851,76,26" Id="BToNrCWcGLKOmYXlBVucVX">
+                      <p:NodeReference LastCategoryFullName="Main.OctreeFlow" LastDependency="test_octreeflow.vl">
+                        <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
+                        <CategoryReference Kind="ClassType" Name="OctreeFlow" NeedsToBeDirectParent="true" />
+                        <Choice Kind="OperationCallFlag" Name="UpdateFrame" />
+                      </p:NodeReference>
+                      <Pin Id="OqyRhzTr3hvQXhZrxNjtwk" Name="Input" Kind="StateInputPin" />
+                      <Pin Id="BnTWoWYIKnvNCOII5Kgyid" Name="Output" Kind="StateOutputPin" />
+                    </Node>
+                  </Patch>
                 </Node>
               </Patch>
             </Node>
@@ -3389,6 +3401,18 @@
                   <ControlPoint Id="BYt2tlVIMm0O73FN4jZi0H" Bounds="1633,621" />
                   <Pad Id="VnBMvvrjJwSMYwoq0txkmO" SlotId="OZH4QdcHmLdPtAal8h3wOq" Bounds="1633,681" />
                   <ControlPoint Id="LalXLyT7EswNiGabgTGWsK" Bounds="1633,790" />
+                  <ControlPoint Id="F34jJD82zALLzZSvIjiqTm" Bounds="2652,620" />
+                  <Pad Id="JwlSvrk978iPiHWikSo99K" SlotId="JvlF2mGfto3MSxKY33vPJj" Bounds="2652,681" />
+                  <ControlPoint Id="Km5rkLSEsBzNzdQCPfdGCP" Bounds="2652,790" />
+                  <Node Bounds="2650,730,37,19" Id="M2Rb5XKbeIzMA7chHIIsW4">
+                    <p:NodeReference LastCategoryFullName="Primitive.Boolean" LastDependency="VL.CoreLib.vl">
+                      <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
+                      <FullNameCategoryReference ID="Primitive.Boolean" />
+                      <Choice Kind="OperationCallFlag" Name="NOT" />
+                    </p:NodeReference>
+                    <Pin Id="PZKTtUeTDCwMhzGa89JGWK" Name="Input" Kind="StateInputPin" />
+                    <Pin Id="CumcduPURhxMwLWfGNBQwE" Name="Output" Kind="StateOutputPin" />
+                  </Node>
                 </Canvas>
                 <Patch Id="OE1XFzkmrVQLFpnWD1NYn9" Name="Create" />
                 <ProcessDefinition Id="JT2kYSr4L3aNLPo1NrSW6y" HasStateOut="true">
@@ -3420,6 +3444,7 @@
                   <Pin Id="OutnFCgO3R8L6JP4OuwVqn" Name="LOD at Middle Point" Kind="InputPin" DefaultValue="0" />
                   <Pin Id="FhmWIdNme1APdXvHapEbvG" Name="Frustum Near" Kind="InputPin" DefaultValue="0.1" />
                   <Pin Id="OrT5fHxH3h1NaYBCpj0ZDv" Name="Frustum Far" Kind="InputPin" DefaultValue="1000" />
+                  <Pin Id="BXJpXrfl3DJN7HNHvr7Nzr" Name="Frustum in Box Only" Kind="InputPin" DefaultValue="1000" />
                 </Patch>
                 <Link Id="FqPFpD82f7YOGQUch7h7yS" Ids="Ejgpp1L7gYEMOrUpOECbQE,N0526Fa3zTZNawyzXH4va9" IsHidden="true" />
                 <Link Id="Ofwt81B8LQxQKibk0FIGCg" Ids="EBDVSvjt3zjLIjSHUxAU94,S3kprUfc8z0Pf7xVhaYw5R" IsHidden="true" />
@@ -3493,6 +3518,7 @@
                   <Pin Id="L3wgqNwbN6BNvLbLFdzFUw" Name="LOD at Middle Point" Kind="OutputPin" />
                   <Pin Id="Eucp9BJTq56PsfTiCCWFAu" Name="Frustum Near" Kind="OutputPin" />
                   <Pin Id="Lcv7sNRLqlWN6kGuG9vY32" Name="Frustum Far" Kind="OutputPin" />
+                  <Pin Id="UmLXDpfwJnfMAiGOXyBbj4" Name="Frustum in Box Only" Kind="OutputPin" />
                 </Patch>
                 <Link Id="DcpvbLzP981LYAIUiMPfVe" Ids="GbbXHhnRLhTQKQxZSrP8h4,ERENzHAnV9DPXTgYKx3oIy" IsHidden="true" />
                 <Link Id="R1faNQplQmwM9mb6TMoOun" Ids="CRdWAiEovkSL9APzeAAgzz,CyoJRqOQlPxLOVsLjXFg6H" IsHidden="true" />
@@ -3543,9 +3569,19 @@
                   </p:TypeAnnotation>
                 </Slot>
                 <Link Id="NAOfaTpPtszM6GGOgt2xlH" Ids="LalXLyT7EswNiGabgTGWsK,Gz7ACIyyisFQFyfHz8GsUR" IsHidden="true" />
+                <Link Id="RwES4legAAJPQn4VXGhYjV" Ids="F34jJD82zALLzZSvIjiqTm,JwlSvrk978iPiHWikSo99K" />
+                <Link Id="GbSaRJIZr0pQJD5SMOoCJr" Ids="BXJpXrfl3DJN7HNHvr7Nzr,F34jJD82zALLzZSvIjiqTm" IsHidden="true" />
+                <Slot Id="JvlF2mGfto3MSxKY33vPJj" Name="Frustum in Box Only">
+                  <p:TypeAnnotation p:Type="TypeReference">
+                    <Choice Kind="TypeFlag" Name="Boolean" />
+                  </p:TypeAnnotation>
+                </Slot>
+                <Link Id="DJRxnPWB24hMlT7kmeNbj8" Ids="Km5rkLSEsBzNzdQCPfdGCP,UmLXDpfwJnfMAiGOXyBbj4" IsHidden="true" />
+                <Link Id="FuxPnxeiLAqPWHuxLhC1eN" Ids="JwlSvrk978iPiHWikSo99K,PZKTtUeTDCwMhzGa89JGWK" />
+                <Link Id="Kbbk5LGsFRxK9gCRLs1XlC" Ids="CumcduPURhxMwLWfGNBQwE,Km5rkLSEsBzNzdQCPfdGCP" />
               </Patch>
             </Node>
-            <Node Bounds="3405,2611,265,26" Id="OSjnTcW9qq8NtEO71Wo13o">
+            <Node Bounds="3405,2611,285,26" Id="OSjnTcW9qq8NtEO71Wo13o">
               <p:NodeReference LastCategoryFullName="OctreeFlow.OctreeFlow.TwoBoxFrustum" LastDependency="Octreeflow.vl">
                 <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                 <FullNameCategoryReference ID="OctreeFlow.OctreeFlow.TwoBoxFrustum" />
@@ -3566,6 +3602,7 @@
               <Pin Id="SU7JFxytrVmMGu2TdBMKuF" Name="LOD at Middle Point" Kind="OutputPin" />
               <Pin Id="SrXrQWwpM8dPYvOB24iNym" Name="Frustum Near" Kind="OutputPin" />
               <Pin Id="AyEsPvOx2yVMD7Zol7Brkv" Name="Frustum Far" Kind="OutputPin" />
+              <Pin Id="AnMYBe3lZEoP71tE5UL9he" Name="Frustum in Box Only" Kind="OutputPin" />
             </Node>
             <ControlPoint Id="GWXwdaYgoqCLmUrGNPm0Yg" Bounds="3407,2511" />
             <Node Bounds="3160,2730,62,26" Id="IISGI9kUJI1LxNSlp6iReu">
@@ -3962,7 +3999,7 @@
                       <Pin Id="FSahMlqKx7QOYppCKako7u" Name="Output" Kind="StateOutputPin" />
                       <Pin Id="Gf2GNgQm9qeMtcz4A3VsDk" Name="Result" Kind="OutputPin" />
                     </Node>
-                    <Node Bounds="3630,3317,30,19" Id="Nf55429S4BvQW9WSAyDLVm">
+                    <Node Bounds="3630,3317,45,19" Id="Nf55429S4BvQW9WSAyDLVm">
                       <p:NodeReference LastCategoryFullName="Primitive.Boolean" LastDependency="VL.CoreLib.vl">
                         <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                         <FullNameCategoryReference ID="Primitive.Boolean" />
@@ -3971,6 +4008,7 @@
                       <Pin Id="AZbqksGZweyL2gOetlstn0" Name="Input" Kind="StateInputPin" />
                       <Pin Id="EHXI6cY3hIRM10q43m6CFb" Name="Input 2" Kind="InputPin" />
                       <Pin Id="RS4Mm1CGt4yOnWBi4xQdGu" Name="Output" Kind="StateOutputPin" />
+                      <Pin Id="UiEROtBOxztPJg4XW8U5v6" Name="Input 3" Kind="InputPin" />
                     </Node>
                     <Node Bounds="3646,3237,25,19" Id="OXCaFOkfnkrMj3peAp43Xj">
                       <p:NodeReference LastCategoryFullName="3D.Collision.ContainmentType" LastDependency="VL.CoreLib.vl">
@@ -4352,6 +4390,16 @@
             <ControlPoint Id="A3703x44Cw4Oo0r8js4G4p" Bounds="2291,2930" />
             <ControlPoint Id="AqiSgcrBq3tNngRvMyhBGY" Bounds="2395,2960" />
             <ControlPoint Id="LAuTsHqFv3iP9SLMW2SjAH" Bounds="2259,2840" />
+            <ControlPoint Id="CtDo4yKuVlSNFuIPe8cCiP" Bounds="1108,3660" />
+            <Node Bounds="1106,3680,37,19" Id="RL8f5JutTDnN5KN3risiPQ">
+              <p:NodeReference LastCategoryFullName="Primitive.Boolean" LastDependency="VL.CoreLib.vl">
+                <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
+                <FullNameCategoryReference ID="Primitive.Boolean" />
+                <Choice Kind="OperationCallFlag" Name="NOT" />
+              </p:NodeReference>
+              <Pin Id="LKyKToH0U7aL9R5RRbxfga" Name="Input" Kind="StateInputPin" />
+              <Pin Id="LekjOn16HzwL2WmGcJ8D3w" Name="Output" Kind="StateOutputPin" />
+            </Node>
           </Canvas>
           <Patch Id="TWKkpYpknMXPPv4uH2DaJ6" Name="Create" ParticipatingElements="SKHrU3x397LOzqk5Q0IN5M,JjEwqr2iL0RMl7yOTzt2ul" />
           <Patch Id="EzAJ5xog2BVOVIRjaVjtBp" Name="Traverse" ParticipatingElements="OvgGDXNBSJrNloXjEokk25,TgrVTIPGT5uPIuZBCoORMd,S4QTVggtenJNC4Z0QbD2ii,Q2YkyuYcZviNHiT9WnXHGr">
@@ -4424,6 +4472,7 @@
             <Pin Id="MeAeZH1RX0rNk5V1yAkgd5" Name="Max Buffer Size MB" Kind="InputPin" />
             <Pin Id="GlwrJp5rfxdNaDG9ZmPUcU" Name="Points Per Node Override" Kind="InputPin" />
             <Pin Id="G3U02CkRLAmLZx2LM0TMhe" Name="Force Treverse" Kind="InputPin" />
+            <Pin Id="C6ahXekYuOyP4mEwlJktZX" Name="Traverse Only" Kind="InputPin" />
             <Pin Id="Eh3h8RHlzYLNECRMXWZFdJ" Name="Abort" Kind="InputPin" />
             <Pin Id="VTDXLrQuQS3PeekY4WLHgk" Name="Traversal Technique" Kind="InputPin" DefaultValue="1" />
             <Pin Id="MggVxFK43erOlp4HSjCoJx" Name="Camera View" Kind="InputPin">
@@ -5089,6 +5138,10 @@
           <Link Id="UEE7uS9mjikLZ0AkDRQzGk" Ids="RX4enjpZGYxNU9krSrpVxf,LfptjcNfDXXMgp5RTGqD3p" />
           <Link Id="I7rkI0CWImKMcXDENa4mJp" Ids="Gf2GNgQm9qeMtcz4A3VsDk,Cu1gWvCH6sqNIS3GEMbZoH" />
           <Link Id="CwaaNVQtBUvNRw29sQUvWu" Ids="MprCN7tcsb6Mqc9mGBCbhr,AXJTKz59UPIM6egOHE4awE" />
+          <Link Id="I3g6GXwoSCcNlAqjZDHY52" Ids="AnMYBe3lZEoP71tE5UL9he,UiEROtBOxztPJg4XW8U5v6" />
+          <Link Id="L1mhnG3zq7DPYhcRSbFqyG" Ids="C6ahXekYuOyP4mEwlJktZX,CtDo4yKuVlSNFuIPe8cCiP" IsHidden="true" />
+          <Link Id="UJVtuVAakNFOi7NFw2lDrZ" Ids="CtDo4yKuVlSNFuIPe8cCiP,LKyKToH0U7aL9R5RRbxfga" />
+          <Link Id="I3LAqNbPEdSPmE8vdfiXKD" Ids="LekjOn16HzwL2WmGcJ8D3w,VnOtpHRDhIDL5SOmGH6ydF" />
         </Patch>
       </Node>
       <!--
