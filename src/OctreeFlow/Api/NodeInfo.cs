@@ -119,25 +119,24 @@ public class NodeInfo
     }
 
     /// <summary>
-    /// Checks if this node needs more detail (should continue to children) based on camera distance and a 0–100% threshold.
-    /// At 100% threshold: target detail is maximum level over the whole frustum (full detail everywhere).
-    /// At 0% threshold: target detail is minimum level over the whole frustum (coarse everywhere).
-    /// In between: detail scales from close (more detail) to far (less detail); curvature skews where the "middle ground" sits.
+    /// Checks if this node needs more detail (should continue to children) based on camera distance and a curve through a middle point.
+    /// The curve connects (Near Plane, Max LOD) to (Far Plane, Min LOD) and passes through a controllable middle point.
+    /// When both middle point controls are 0, the curve is linear; moving either skews the curve.
     /// </summary>
     /// <param name="cameraPosition">The camera/viewer position.</param>
-    /// <param name="thresholdPercent">0–100. At 100% use max level everywhere; at 0% use min level everywhere; in between use gradient by distance.</param>
     /// <param name="minLevel">Minimum octree level to use (coarser detail).</param>
     /// <param name="maxLevel">Maximum octree level to use (finest detail).</param>
-    /// <param name="curvature">0–1, default 0.5. Skews the distance-to-detail curve: 0.5 = linear; &lt; 0.5 = middle shifts toward camera (faster falloff); &gt; 0.5 = middle shifts toward far (longer high-detail range).</param>
-    /// <param name="frustumNear">Distance to near plane; points at this distance are treated as "close" (detail factor 1).</param>
-    /// <param name="frustumFar">Distance to far plane; points at this distance are treated as "far" (detail factor 0).</param>
+    /// <param name="middlePointX">-1 to 1, default 0. Where along the distance axis the middle point sits: -1 = near plane, 0 = halfway, 1 = far plane.</param>
+    /// <param name="middlePointY">-1 to 1, default 0. LOD at the middle point: -1 = min LOD, 0 = halfway, 1 = max LOD.</param>
+    /// <param name="frustumNear">Distance to near plane.</param>
+    /// <param name="frustumFar">Distance to far plane.</param>
     /// <returns>True if this node should subdivide to reach the target level for its distance.</returns>
     public bool NeedsMoreDetail(
         Vector3 cameraPosition,
-        float thresholdPercent,
         int minLevel,
         int maxLevel,
-        float curvature = 0.5f,
+        float middlePointX = 0f,
+        float middlePointY = 0f,
         float frustumNear = 0.1f,
         float frustumFar = 1000f)
     {
@@ -146,29 +145,76 @@ public class NodeInfo
 
         int lo = Math.Min(minLevel, maxLevel);
         int hi = Math.Max(minLevel, maxLevel);
-        float t = Math.Clamp(thresholdPercent / 100f, 0f, 1f);
 
         // Distance from camera to closest point on this node's bounds
         var closest = Vector3.Clamp(cameraPosition, BoundingBox.Minimum, BoundingBox.Maximum);
         float distance = Vector3.Distance(cameraPosition, closest);
 
-        // Map distance to 0 (far)..1 (close) over the frustum length
+        // Normalized distance along frustum: 0 = near plane, 1 = far plane
         float range = Math.Max(frustumFar - frustumNear, 0.0001f);
-        float distanceFactor = 1f - Math.Clamp((distance - frustumNear) / range, 0f, 1f);
+        float dNorm = Math.Clamp((distance - frustumNear) / range, 0f, 1f);
 
-        // Curvature skews linearity: 0.5 = linear (exponent 1), <0.5 = faster falloff (exponent <1), >0.5 = longer high-detail range (exponent >1)
-        float exponent = MathF.Pow(2f, (Math.Clamp(curvature, 0f, 1f) - 0.5f) * 2f);
-        distanceFactor = MathF.Pow(Math.Max(distanceFactor, 1e-6f), exponent);
+        // Middle point in normalized space: X/Y in [-1,1] -> (0.5 + 0.5*x) in [0,1]
+        float midX = Math.Clamp(middlePointX, -1f, 1f);
+        float midY = Math.Clamp(middlePointY, -1f, 1f);
+        float p1x = (1f + midX) * 0.5f;
+        float p1y = (1f + midY) * 0.5f;
 
-        // At 0%: alpha=0 (min level everywhere). At 100%: alpha=1 (max level everywhere).
-        // In between: gradient; strength k = 4*t*(1-t), so k=0 at 0% and 100%, k=1 at 50%.
-        float k = 4f * t * (1f - t);
-        float alpha = Math.Clamp(t + k * (distanceFactor - 0.5f), 0f, 1f);
+        // Quadratic curve through P0=(0,1) [near, max LOD], P1=(p1x, p1y) [middle], P2=(1,0) [far, min LOD]
+        // Parametric: x(t) and y(t) with t in [0,1], using Lagrange-style quadratic through t=0, 0.5, 1
+        // x(t) = 4*p1x*t*(1-t) + t*(2t-1)  =>  solve for t given dNorm
+        float lodNorm = EvaluateLodCurve(dNorm, p1x, p1y);
 
-        float targetLevelF = lo + (hi - lo) * alpha;
-        int targetLevel = (int)Math.Round(targetLevelF);
+        float targetLevelF = lo + (hi - lo) * lodNorm;
+        int targetLevel = (int)Math.Round(Math.Clamp(targetLevelF, lo, hi));
 
         return Level < targetLevel;
+    }
+
+    /// <summary>
+    /// Given normalized distance dNorm in [0,1], returns LOD norm in [0,1] from the quadratic through (0,1), (p1x,p1y), (1,0).
+    /// </summary>
+    private static float EvaluateLodCurve(float dNorm, float p1x, float p1y)
+    {
+        // Solve for t such that x(t) = dNorm, then return y(t).
+        // x(t) = (2 - 4*p1x)*t^2 + (4*p1x - 1)*t = dNorm  =>  a*t^2 + b*t - dNorm = 0
+        float a = 2f - 4f * p1x;
+        float b = 4f * p1x - 1f;
+
+        float t;
+        if (Math.Abs(a) < 1e-6f)
+        {
+            // Linear: x(t) = b*t, so t = dNorm / b (b = 1 when p1x = 0.5)
+            t = Math.Abs(b) < 1e-6f ? dNorm : Math.Clamp(dNorm / b, 0f, 1f);
+        }
+        else
+        {
+            float disc = b * b + 4f * a * dNorm;
+            if (disc < 0f)
+                disc = 0f;
+            float sqrt = MathF.Sqrt(disc);
+            float t1 = (-b - sqrt) / (2f * a);
+            float t2 = (-b + sqrt) / (2f * a);
+            // Pick the root in [0,1] for which x(t) is closest to dNorm
+            float x1 = a * t1 * t1 + b * t1;
+            float x2 = a * t2 * t2 + b * t2;
+            bool t1In = t1 >= 0f && t1 <= 1f;
+            bool t2In = t2 >= 0f && t2 <= 1f;
+            if (t1In && t2In)
+                t = Math.Abs(x1 - dNorm) <= Math.Abs(x2 - dNorm) ? t1 : t2;
+            else if (t1In)
+                t = t1;
+            else if (t2In)
+                t = t2;
+            else
+                t = Math.Clamp(dNorm, 0f, 1f);
+        }
+
+        t = Math.Clamp(t, 0f, 1f);
+
+        // y(t) = (1-t)(1-2t)*1 + 4*t*(1-t)*p1y + t*(2t-1)*0 = (1-t)(1-2t) + 4*p1y*t*(1-t)
+        float y = (1f - t) * (1f - 2f * t) + 4f * p1y * t * (1f - t);
+        return Math.Clamp(y, 0f, 1f);
     }
 }
 
