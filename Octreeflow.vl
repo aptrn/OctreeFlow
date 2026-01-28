@@ -3391,12 +3391,15 @@
                   <ControlPoint Id="GEnrbpEMWIHP7uhCNuTFoE" Bounds="425,571" />
                   <Pad Id="NGU2kKyvTjgPf0vnjNK7T0" SlotId="PNd40tApI1zLFEXAWEgNrR" Bounds="425,661" />
                   <ControlPoint Id="IFeXbFWSb7aOWQp3wND22D" Bounds="425,811" />
-                  <ControlPoint Id="UUbQyhGuI1HNh7WVlzBZ6l" Bounds="2128,630" />
-                  <Pad Id="BHzd8MPySXOOIDceymuHht" SlotId="DtPe3fY4cZoPcHIkRIBhMG" Bounds="2128,691" />
-                  <ControlPoint Id="DGFzIUDhcbfPDqBdAVqmAa" Bounds="2128,800" />
-                  <ControlPoint Id="QAtldMK74q7P7uRnCj0QMw" Bounds="2297,620" />
-                  <Pad Id="Qhu8iLBBfClLsxN2hKgNco" SlotId="VrM12184bSeOaMOiYUZ5aS" Bounds="2297,681" />
-                  <ControlPoint Id="BSxJDcpd2QqQJmYVa2jLuG" Bounds="2297,790" />
+                  <ControlPoint Id="UUbQyhGuI1HNh7WVlzBZ6l" Bounds="2333,631" />
+                  <Pad Id="BHzd8MPySXOOIDceymuHht" SlotId="DtPe3fY4cZoPcHIkRIBhMG" Bounds="2333,692" />
+                  <ControlPoint Id="DGFzIUDhcbfPDqBdAVqmAa" Bounds="2333,801" />
+                  <ControlPoint Id="QAtldMK74q7P7uRnCj0QMw" Bounds="2502,621" />
+                  <Pad Id="Qhu8iLBBfClLsxN2hKgNco" SlotId="VrM12184bSeOaMOiYUZ5aS" Bounds="2502,682" />
+                  <ControlPoint Id="BSxJDcpd2QqQJmYVa2jLuG" Bounds="2502,791" />
+                  <ControlPoint Id="II9Sw9naobZQHF1LrDauC1" Bounds="2102,630" />
+                  <Pad Id="JojRt0YbdD1LR5wazOiBLV" SlotId="NpnIY3XOefvLvEb8Q1MzFg" Bounds="2102,691" />
+                  <ControlPoint Id="KDDspIpXFM7Od4RtPnzFP8" Bounds="2102,800" />
                 </Canvas>
                 <Patch Id="OE1XFzkmrVQLFpnWD1NYn9" Name="Create" />
                 <ProcessDefinition Id="JT2kYSr4L3aNLPo1NrSW6y" HasStateOut="true">
@@ -3416,16 +3419,17 @@
                 </Slot>
                 <Patch Id="AktAnXhMthAMAW7qs28CKw" Name="Update">
                   <Pin Id="De2AqLOOtxtMGCWFf2potF" Name="Min Level" Kind="InputPin" />
-                  <Pin Id="ATvbO7Q0C2mO2C0BUrAUAK" Name="Max Level" Kind="InputPin" />
+                  <Pin Id="ATvbO7Q0C2mO2C0BUrAUAK" Name="Max Level" Kind="InputPin" DefaultValue="8" />
                   <Pin Id="Ejgpp1L7gYEMOrUpOECbQE" Name="Enable Base" Kind="InputPin" />
-                  <Pin Id="EBDVSvjt3zjLIjSHUxAU94" Name="Base Up To Level" Kind="InputPin" />
+                  <Pin Id="EBDVSvjt3zjLIjSHUxAU94" Name="Base Up To Level" Kind="InputPin" DefaultValue="1" />
                   <Pin Id="GbbXHhnRLhTQKQxZSrP8h4" Name="CoarseBox" Kind="InputPin" />
                   <Pin Id="CRdWAiEovkSL9APzeAAgzz" Name="FineBox" Kind="InputPin" />
                   <Pin Id="E7tqKzhraAENVFMTlT1o4o" Name="Enable Frustum" Kind="InputPin" />
-                  <Pin Id="R87S6RQxn5KQRZ9mplqYTF" Name="Frustum Up To Level" Kind="InputPin" />
-                  <Pin Id="EOvMV1PiRWzPllQBSfd4OX" Name="Frustum Threshold" Kind="InputPin" />
-                  <Pin Id="FhmWIdNme1APdXvHapEbvG" Name="Frustum Near" Kind="InputPin" />
-                  <Pin Id="OrT5fHxH3h1NaYBCpj0ZDv" Name="Frustum Far" Kind="InputPin" />
+                  <Pin Id="R87S6RQxn5KQRZ9mplqYTF" Name="Frustum Up To Level" Kind="InputPin" DefaultValue="4" />
+                  <Pin Id="EOvMV1PiRWzPllQBSfd4OX" Name="Frustum Threshold" Kind="InputPin" DefaultValue="50" />
+                  <Pin Id="OutnFCgO3R8L6JP4OuwVqn" Name="Frustum Curvature" Kind="InputPin" DefaultValue="0.5" />
+                  <Pin Id="FhmWIdNme1APdXvHapEbvG" Name="Frustum Near" Kind="InputPin" DefaultValue="0.1" />
+                  <Pin Id="OrT5fHxH3h1NaYBCpj0ZDv" Name="Frustum Far" Kind="InputPin" DefaultValue="1000" />
                 </Patch>
                 <Link Id="FqPFpD82f7YOGQUch7h7yS" Ids="Ejgpp1L7gYEMOrUpOECbQE,N0526Fa3zTZNawyzXH4va9" IsHidden="true" />
                 <Link Id="Ofwt81B8LQxQKibk0FIGCg" Ids="EBDVSvjt3zjLIjSHUxAU94,S3kprUfc8z0Pf7xVhaYw5R" IsHidden="true" />
@@ -3495,6 +3499,7 @@
                   <Pin Id="OFnJJrZ3V85Ofcilr3OCB1" Name="Enable Frustum" Kind="OutputPin" />
                   <Pin Id="Cal8cr9przYNF9u51q80MX" Name="Frustum Up To Level" Kind="OutputPin" />
                   <Pin Id="O15weeDQ4gxL518NfBFIqh" Name="Frustum Threshold" Kind="OutputPin" />
+                  <Pin Id="L3wgqNwbN6BNvLbLFdzFUw" Name="Frustum Curvature" Kind="OutputPin" />
                   <Pin Id="Eucp9BJTq56PsfTiCCWFAu" Name="Frustum Near" Kind="OutputPin" />
                   <Pin Id="Lcv7sNRLqlWN6kGuG9vY32" Name="Frustum Far" Kind="OutputPin" />
                 </Patch>
@@ -3529,9 +3534,18 @@
                   </p:TypeAnnotation>
                 </Slot>
                 <Link Id="RYokeoLR7oBNelcMbX3yt6" Ids="BSxJDcpd2QqQJmYVa2jLuG,Lcv7sNRLqlWN6kGuG9vY32" IsHidden="true" />
+                <Link Id="IK1N3pv2WOzOPxXl5jcfUj" Ids="II9Sw9naobZQHF1LrDauC1,JojRt0YbdD1LR5wazOiBLV" />
+                <Link Id="L4ZEj0mozpqNmfC5rFZ1sa" Ids="JojRt0YbdD1LR5wazOiBLV,KDDspIpXFM7Od4RtPnzFP8" />
+                <Link Id="LvpmhKsu7AOPAWpmE9QWbP" Ids="OutnFCgO3R8L6JP4OuwVqn,II9Sw9naobZQHF1LrDauC1" IsHidden="true" />
+                <Slot Id="NpnIY3XOefvLvEb8Q1MzFg" Name="Frustum Curvature">
+                  <p:TypeAnnotation p:Type="TypeReference">
+                    <Choice Kind="TypeFlag" Name="Float32" />
+                  </p:TypeAnnotation>
+                </Slot>
+                <Link Id="A4Q04cC4cMNLL8GAzHVU2H" Ids="KDDspIpXFM7Od4RtPnzFP8,L3wgqNwbN6BNvLbLFdzFUw" IsHidden="true" />
               </Patch>
             </Node>
-            <Node Bounds="3405,2611,225,26" Id="OSjnTcW9qq8NtEO71Wo13o">
+            <Node Bounds="3405,2611,245,26" Id="OSjnTcW9qq8NtEO71Wo13o">
               <p:NodeReference LastCategoryFullName="OctreeFlow.OctreeFlow.TwoBoxFrustum" LastDependency="Octreeflow.vl">
                 <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                 <FullNameCategoryReference ID="OctreeFlow.OctreeFlow.TwoBoxFrustum" />
@@ -3548,6 +3562,7 @@
               <Pin Id="SeJLgL8hbpSLTuQxRexgSW" Name="Enable Frustum" Kind="OutputPin" />
               <Pin Id="DnZGYnpAJ3nMafkRlkU58P" Name="Frustum Up To Level" Kind="OutputPin" />
               <Pin Id="UEO42yx8ndyOsKLGQdj0s9" Name="Frustum Threshold" Kind="OutputPin" />
+              <Pin Id="SU7JFxytrVmMGu2TdBMKuF" Name="Frustum Curvature" Kind="OutputPin" />
               <Pin Id="SrXrQWwpM8dPYvOB24iNym" Name="Frustum Near" Kind="OutputPin" />
               <Pin Id="AyEsPvOx2yVMD7Zol7Brkv" Name="Frustum Far" Kind="OutputPin" />
             </Node>
@@ -3950,6 +3965,7 @@
                       <Pin Id="RcPKeiQ7LoEPKfCVcYibEL" Name="Threshold Percent" Kind="InputPin" />
                       <Pin Id="HVHKWNpwwGeQVOHDOVVe32" Name="Min Level" Kind="InputPin" />
                       <Pin Id="C38oHX7Hg7gNeGYBx3vYUh" Name="Max Level" Kind="InputPin" />
+                      <Pin Id="ObzFBZ1AtwCPVIyKRO2cgX" Name="Curvature" Kind="InputPin" />
                       <Pin Id="KT7U3kfKaYvLheJkBxEmJL" Name="Frustum Near" Kind="InputPin" />
                       <Pin Id="PzH7d30H2jHLAuQyHYrsJB" Name="Frustum Far" Kind="InputPin" />
                       <Pin Id="FSahMlqKx7QOYppCKako7u" Name="Output" Kind="StateOutputPin" />
@@ -4265,6 +4281,7 @@
                   <Pin Id="KXOiYM4riM3MGTwzHxcdns" Name="Threshold Percent" Kind="InputPin" />
                   <Pin Id="O2BBBkKkYdmMO1EhRmQ38b" Name="Min Level" Kind="InputPin" />
                   <Pin Id="QmUHtZDSLHmLzs9DcPbeWJ" Name="Max Level" Kind="InputPin" />
+                  <Pin Id="MIyiTHqkZnXN6WLKnD6Cdp" Name="Curvature" Kind="InputPin" />
                   <Pin Id="UzCajCiTNlWQYk945qb1ia" Name="Frustum Near" Kind="InputPin" />
                   <Pin Id="KLiLENOi003LpPQzsfvYP7" Name="Frustum Far" Kind="InputPin" />
                   <Pin Id="MwWgXvaSXIJO2NZrDviX4M" Name="Output" Kind="StateOutputPin" />
@@ -4333,6 +4350,7 @@
             </Node>
             <ControlPoint Id="A3703x44Cw4Oo0r8js4G4p" Bounds="2291,2930" />
             <ControlPoint Id="AqiSgcrBq3tNngRvMyhBGY" Bounds="2395,2960" />
+            <ControlPoint Id="LAuTsHqFv3iP9SLMW2SjAH" Bounds="2259,2840" />
           </Canvas>
           <Patch Id="TWKkpYpknMXPPv4uH2DaJ6" Name="Create" ParticipatingElements="SKHrU3x397LOzqk5Q0IN5M,JjEwqr2iL0RMl7yOTzt2ul" />
           <Patch Id="EzAJ5xog2BVOVIRjaVjtBp" Name="Traverse" ParticipatingElements="OvgGDXNBSJrNloXjEokk25,TgrVTIPGT5uPIuZBCoORMd,MWRv97B9LfUPOFphSdBdpw,S4QTVggtenJNC4Z0QbD2ii,Q2YkyuYcZviNHiT9WnXHGr">
@@ -4423,6 +4441,7 @@
             <Pin Id="LNF8oVfwaMtPWtmzJMfIPP" Name="Min Level" Kind="InputPin" />
             <Pin Id="Ex56F8GBN1pLX7Wh63BawI" Name="Max Level" Kind="InputPin" DefaultValue="5" />
             <Pin Id="Qcze6eiKxtKPg20W68RMZ3" Name="Density Threshold" Kind="InputPin" DefaultValue="0.01" />
+            <Pin Id="SQtNmxEIFmkOFw9FPBEAru" Name="Density Curvature" Kind="InputPin" />
             <Pin Id="KMhOZ89Y3XQOoZgCD0XCEV" Name="Frustum Near" Kind="InputPin" />
             <Pin Id="HajdyYKJcjNMMaChTgEY0O" Name="Frustum Far" Kind="InputPin" />
             <Pin Id="O3kTcO8YSNeLinC2QIqT3q" Name="Traversal In Progress" Kind="OutputPin" />
@@ -5068,6 +5087,9 @@
           <Link Id="Aceddb9cG9XNLM9S5KHjcL" Ids="P22IjPzQMGZLGGfK3fTjbu,CzNvOzrf0VGPHFVDszDD4t" />
           <Link Id="Vh1CT0m7ncdNzh0bJq1y07" Ids="KEiuq5Ow2CtPFErd9d7J6w,CYPM5hvUeBlPs8gTaYVnyc" />
           <Link Id="QFC7oW7JRkoO4llQqJhpuB" Ids="DGAToSg6HoOLpDgL5zfn68,UQjpFVFeM4KMsAClQly7pe" />
+          <Link Id="QAt5imGgfZdQGyeuq9qYmp" Ids="LAuTsHqFv3iP9SLMW2SjAH,MIyiTHqkZnXN6WLKnD6Cdp" />
+          <Link Id="RfvBQtkP2PqNQdHfo6AhMK" Ids="SQtNmxEIFmkOFw9FPBEAru,LAuTsHqFv3iP9SLMW2SjAH" IsHidden="true" />
+          <Link Id="Rwys0bov8LLNugbbDRljnW" Ids="SU7JFxytrVmMGu2TdBMKuF,ObzFBZ1AtwCPVIyKRO2cgX" />
         </Patch>
       </Node>
       <!--

@@ -122,12 +122,13 @@ public class NodeInfo
     /// Checks if this node needs more detail (should continue to children) based on camera distance and a 0–100% threshold.
     /// At 100% threshold: target detail is maximum level over the whole frustum (full detail everywhere).
     /// At 0% threshold: target detail is minimum level over the whole frustum (coarse everywhere).
-    /// In between: detail scales linearly from close to the camera (more detail) to far (less detail).
+    /// In between: detail scales from close (more detail) to far (less detail); curvature skews where the "middle ground" sits.
     /// </summary>
     /// <param name="cameraPosition">The camera/viewer position.</param>
-    /// <param name="thresholdPercent">0–100. At 100% use max level everywhere; at 0% use min level everywhere; in between use linear gradient by distance.</param>
+    /// <param name="thresholdPercent">0–100. At 100% use max level everywhere; at 0% use min level everywhere; in between use gradient by distance.</param>
     /// <param name="minLevel">Minimum octree level to use (coarser detail).</param>
     /// <param name="maxLevel">Maximum octree level to use (finest detail).</param>
+    /// <param name="curvature">0–1, default 0.5. Skews the distance-to-detail curve: 0.5 = linear; &lt; 0.5 = middle shifts toward camera (faster falloff); &gt; 0.5 = middle shifts toward far (longer high-detail range).</param>
     /// <param name="frustumNear">Distance to near plane; points at this distance are treated as "close" (detail factor 1).</param>
     /// <param name="frustumFar">Distance to far plane; points at this distance are treated as "far" (detail factor 0).</param>
     /// <returns>True if this node should subdivide to reach the target level for its distance.</returns>
@@ -136,6 +137,7 @@ public class NodeInfo
         float thresholdPercent,
         int minLevel,
         int maxLevel,
+        float curvature = 0.5f,
         float frustumNear = 0.1f,
         float frustumFar = 1000f)
     {
@@ -154,8 +156,12 @@ public class NodeInfo
         float range = Math.Max(frustumFar - frustumNear, 0.0001f);
         float distanceFactor = 1f - Math.Clamp((distance - frustumNear) / range, 0f, 1f);
 
+        // Curvature skews linearity: 0.5 = linear (exponent 1), <0.5 = faster falloff (exponent <1), >0.5 = longer high-detail range (exponent >1)
+        float exponent = MathF.Pow(2f, (Math.Clamp(curvature, 0f, 1f) - 0.5f) * 2f);
+        distanceFactor = MathF.Pow(Math.Max(distanceFactor, 1e-6f), exponent);
+
         // At 0%: alpha=0 (min level everywhere). At 100%: alpha=1 (max level everywhere).
-        // In between: linear gradient; strength of gradient is k = 4*t*(1-t), so k=0 at 0% and 100%, k=1 at 50%.
+        // In between: gradient; strength k = 4*t*(1-t), so k=0 at 0% and 100%, k=1 at 50%.
         float k = 4f * t * (1f - t);
         float alpha = Math.Clamp(t + k * (distanceFactor - 0.5f), 0f, 1f);
 
