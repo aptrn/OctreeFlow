@@ -119,14 +119,50 @@ public class NodeInfo
     }
 
     /// <summary>
-    /// Checks if this node needs more detail (should continue to children) based on camera distance.
+    /// Checks if this node needs more detail (should continue to children) based on camera distance and a 0–100% threshold.
+    /// At 100% threshold: target detail is maximum level over the whole frustum (full detail everywhere).
+    /// At 0% threshold: target detail is minimum level over the whole frustum (coarse everywhere).
+    /// In between: detail scales linearly from close to the camera (more detail) to far (less detail).
     /// </summary>
     /// <param name="cameraPosition">The camera/viewer position.</param>
-    /// <param name="threshold">Screen-size threshold. Lower = more detail. Default 1.0, try 0.5-2.0.</param>
-    /// <returns>True if the node appears large enough on screen to warrant subdivision.</returns>
-    public bool NeedsMoreDetail(Vector3 cameraPosition, float threshold = 1.0f)
+    /// <param name="thresholdPercent">0–100. At 100% use max level everywhere; at 0% use min level everywhere; in between use linear gradient by distance.</param>
+    /// <param name="minLevel">Minimum octree level to use (coarser detail).</param>
+    /// <param name="maxLevel">Maximum octree level to use (finest detail).</param>
+    /// <param name="frustumNear">Distance to near plane; points at this distance are treated as "close" (detail factor 1).</param>
+    /// <param name="frustumFar">Distance to far plane; points at this distance are treated as "far" (detail factor 0).</param>
+    /// <returns>True if this node should subdivide to reach the target level for its distance.</returns>
+    public bool NeedsMoreDetail(
+        Vector3 cameraPosition,
+        float thresholdPercent,
+        int minLevel,
+        int maxLevel,
+        float frustumNear = 0.1f,
+        float frustumFar = 1000f)
     {
-        return ScreenSize(cameraPosition) > threshold && !IsLeaf;
+        if (IsLeaf)
+            return false;
+
+        int lo = Math.Min(minLevel, maxLevel);
+        int hi = Math.Max(minLevel, maxLevel);
+        float t = Math.Clamp(thresholdPercent / 100f, 0f, 1f);
+
+        // Distance from camera to closest point on this node's bounds
+        var closest = Vector3.Clamp(cameraPosition, BoundingBox.Minimum, BoundingBox.Maximum);
+        float distance = Vector3.Distance(cameraPosition, closest);
+
+        // Map distance to 0 (far)..1 (close) over the frustum length
+        float range = Math.Max(frustumFar - frustumNear, 0.0001f);
+        float distanceFactor = 1f - Math.Clamp((distance - frustumNear) / range, 0f, 1f);
+
+        // At 0%: alpha=0 (min level everywhere). At 100%: alpha=1 (max level everywhere).
+        // In between: linear gradient; strength of gradient is k = 4*t*(1-t), so k=0 at 0% and 100%, k=1 at 50%.
+        float k = 4f * t * (1f - t);
+        float alpha = Math.Clamp(t + k * (distanceFactor - 0.5f), 0f, 1f);
+
+        float targetLevelF = lo + (hi - lo) * alpha;
+        int targetLevel = (int)Math.Round(targetLevelF);
+
+        return Level < targetLevel;
     }
 }
 
