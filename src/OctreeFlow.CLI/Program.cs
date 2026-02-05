@@ -23,6 +23,10 @@ class Program
         var traverseCommand = CreateTraverseCommand();
         rootCommand.AddCommand(traverseCommand);
 
+        // Batch command (process folder)
+        var batchCommand = CreateBatchCommand();
+        rootCommand.AddCommand(batchCommand);
+
         return await rootCommand.InvokeAsync(args);
     }
 
@@ -731,5 +735,263 @@ class Program
             Console.WriteLine(ex.StackTrace);
             Console.ResetColor();
         }
+    }
+
+    static Command CreateBatchCommand()
+    {
+        var folderOption = new Option<DirectoryInfo>(
+            aliases: new[] { "--folder", "-f" },
+            description: "Folder containing PLY files to process")
+        { IsRequired = true };
+
+        var recursiveOption = new Option<bool>(
+            aliases: new[] { "--recursive", "-r" },
+            getDefaultValue: () => false,
+            description: "Search for PLY files recursively in subfolders");
+
+        var pointsPerNodeOption = new Option<int>(
+            aliases: new[] { "--points-per-node", "-n" },
+            getDefaultValue: () => 1000,
+            description: "Number of points per node");
+
+        var minDistanceOption = new Option<float>(
+            aliases: new[] { "--min-distance", "-d" },
+            getDefaultValue: () => 1.0f,
+            description: "Starting minimum distance between points at level 0");
+
+        var ratioOption = new Option<float>(
+            aliases: new[] { "--level-ratio" },
+            getDefaultValue: () => 0.5f,
+            description: "Distance threshold ratio for each subsequent level");
+
+        var seedOption = new Option<int?>(
+            aliases: new[] { "--seed", "-s" },
+            description: "Random seed for reproducible results");
+
+        var maxDepthOption = new Option<int>(
+            aliases: new[] { "--max-depth" },
+            getDefaultValue: () => 0,
+            description: "Maximum octree depth (0 = unlimited)");
+
+        var verboseOption = new Option<bool>(
+            aliases: new[] { "--verbose", "-v" },
+            getDefaultValue: () => false,
+            description: "Enable verbose output");
+
+        var threadsOption = new Option<int>(
+            aliases: new[] { "--threads", "-t" },
+            getDefaultValue: () => 0,
+            description: "Number of threads to use (0 = auto-detect based on CPU cores)");
+
+        var forceOption = new Option<bool>(
+            aliases: new[] { "--force" },
+            getDefaultValue: () => false,
+            description: "Force reprocessing even if octree file exists with latest version");
+
+        var batchCommand = new Command("batch", "Process all PLY files in a folder")
+        {
+            folderOption,
+            recursiveOption,
+            pointsPerNodeOption,
+            minDistanceOption,
+            ratioOption,
+            seedOption,
+            maxDepthOption,
+            verboseOption,
+            threadsOption,
+            forceOption
+        };
+
+        batchCommand.SetHandler(async (context) =>
+        {
+            var folder = context.ParseResult.GetValueForOption(folderOption)!;
+            var recursive = context.ParseResult.GetValueForOption(recursiveOption);
+            var pointsPerNode = context.ParseResult.GetValueForOption(pointsPerNodeOption);
+            var minDistance = context.ParseResult.GetValueForOption(minDistanceOption);
+            var ratio = context.ParseResult.GetValueForOption(ratioOption);
+            var seed = context.ParseResult.GetValueForOption(seedOption);
+            var maxDepth = context.ParseResult.GetValueForOption(maxDepthOption);
+            var verbose = context.ParseResult.GetValueForOption(verboseOption);
+            var threads = context.ParseResult.GetValueForOption(threadsOption);
+            var force = context.ParseResult.GetValueForOption(forceOption);
+
+            await BatchProcessFolder(folder, recursive, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose, threads, force);
+        });
+
+        return batchCommand;
+    }
+
+    static async Task BatchProcessFolder(
+        DirectoryInfo folder,
+        bool recursive,
+        int pointsPerNode,
+        float minDistance,
+        float ratio,
+        int? seed,
+        int maxDepth,
+        bool verbose,
+        int threads,
+        bool force)
+    {
+        if (!folder.Exists)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error: Folder not found: {folder.FullName}");
+            Console.ResetColor();
+            return;
+        }
+
+        Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║           OctreeFlow Batch Processor                         ║");
+        Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        Console.WriteLine($"Folder:          {folder.FullName}");
+        Console.WriteLine($"Recursive:       {recursive}");
+        Console.WriteLine($"Points per node: {pointsPerNode}");
+        Console.WriteLine($"Min distance:    {minDistance}");
+        Console.WriteLine($"Level ratio:     {ratio}");
+        Console.WriteLine($"Max depth:       {(maxDepth == 0 ? "unlimited" : maxDepth)}");
+        Console.WriteLine($"Force rebuild:   {force}");
+        Console.WriteLine();
+
+        // Find all PLY files
+        var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+        var plyFiles = folder.GetFiles("*.ply", searchOption)
+            .OrderBy(f => f.FullName)
+            .ToList();
+
+        if (plyFiles.Count == 0)
+        {
+            Console.WriteLine("No PLY files found in the specified folder.");
+            return;
+        }
+
+        Console.WriteLine($"Found {plyFiles.Count} PLY file(s)");
+        Console.WriteLine();
+
+        // Check which files need processing
+        var serializer = new StreamingOctreeSerializer();
+        var filesToProcess = new List<FileInfo>();
+        var skippedFiles = new List<(FileInfo file, string reason)>();
+
+        const int LatestVersion = 5; // Must match StreamingOctreeSerializer.CurrentVersion
+
+        foreach (var plyFile in plyFiles)
+        {
+            var octreePath = Path.Combine(
+                plyFile.DirectoryName ?? ".",
+                Path.GetFileNameWithoutExtension(plyFile.Name) + ".octree");
+
+            if (!force && File.Exists(octreePath))
+            {
+                try
+                {
+                    var (_, info) = serializer.LoadOctreeFile(octreePath);
+                    if (info.Version >= LatestVersion)
+                    {
+                        skippedFiles.Add((plyFile, $"up-to-date (v{info.Version})"));
+                        continue;
+                    }
+                    else
+                    {
+                        skippedFiles.Add((plyFile, $"outdated version (v{info.Version}), will rebuild"));
+                        filesToProcess.Add(plyFile);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Corrupted or unreadable octree file - rebuild it
+                    skippedFiles.Add((plyFile, $"invalid octree file ({ex.Message}), will rebuild"));
+                    filesToProcess.Add(plyFile);
+                }
+            }
+            else
+            {
+                filesToProcess.Add(plyFile);
+            }
+        }
+
+        // Report skipped files
+        if (skippedFiles.Count > 0)
+        {
+            Console.WriteLine("Skipped files:");
+            foreach (var (file, reason) in skippedFiles)
+            {
+                if (reason.Contains("up-to-date"))
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"  [SKIP] {file.Name} - {reason}");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  [REBUILD] {file.Name} - {reason}");
+                    Console.ResetColor();
+                }
+            }
+            Console.WriteLine();
+        }
+
+        if (filesToProcess.Count == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("All files are up-to-date. Nothing to process.");
+            Console.ResetColor();
+            return;
+        }
+
+        Console.WriteLine($"Processing {filesToProcess.Count} file(s)...");
+        Console.WriteLine();
+
+        var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int processed = 0;
+        int failed = 0;
+
+        foreach (var plyFile in filesToProcess)
+        {
+            Console.WriteLine("────────────────────────────────────────────────────────────────");
+            Console.WriteLine($"[{processed + failed + 1}/{filesToProcess.Count}] {plyFile.Name}");
+            Console.WriteLine("────────────────────────────────────────────────────────────────");
+
+            try
+            {
+                await BuildOctree(plyFile, null, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose, threads);
+                processed++;
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error processing {plyFile.Name}: {ex.Message}");
+                Console.ResetColor();
+                failed++;
+            }
+
+            Console.WriteLine();
+        }
+
+        totalStopwatch.Stop();
+
+        // Summary
+        Console.WriteLine("════════════════════════════════════════════════════════════════");
+        Console.WriteLine("                        BATCH COMPLETE");
+        Console.WriteLine("════════════════════════════════════════════════════════════════");
+        Console.WriteLine();
+        Console.WriteLine($"Total time:     {FormatTime(totalStopwatch.Elapsed)}");
+        Console.WriteLine($"Files found:    {plyFiles.Count}");
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"Skipped:        {skippedFiles.Count(s => s.reason.Contains("up-to-date"))} (already up-to-date)");
+        Console.ResetColor();
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Processed:      {processed}");
+        Console.ResetColor();
+        if (failed > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Failed:         {failed}");
+            Console.ResetColor();
+        }
+        Console.WriteLine();
     }
 }
