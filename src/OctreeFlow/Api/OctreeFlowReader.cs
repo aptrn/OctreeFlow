@@ -1059,6 +1059,7 @@ public class OctreeFlowReader : IDisposable
         {
             var name = props[i].Name.ToLower();
             var val = values[i];
+            var type = props[i].Type;
 
             switch (name)
             {
@@ -1066,22 +1067,22 @@ public class OctreeFlowReader : IDisposable
                 case "y": point.Position.Y = val; break;
                 case "z": point.Position.Z = val; break;
                 case "red" or "r":
-                    point.Color = new Color4(val > 1 ? val / 255f : val, point.Color.G, point.Color.B, point.Color.A);
+                    point.Color = new Color4(NormalizeColorChannel(val, type), point.Color.G, point.Color.B, point.Color.A);
                     break;
                 case "green" or "g":
-                    point.Color = new Color4(point.Color.R, val > 1 ? val / 255f : val, point.Color.B, point.Color.A);
+                    point.Color = new Color4(point.Color.R, NormalizeColorChannel(val, type), point.Color.B, point.Color.A);
                     break;
                 case "blue" or "b":
-                    point.Color = new Color4(point.Color.R, point.Color.G, val > 1 ? val / 255f : val, point.Color.A);
+                    point.Color = new Color4(point.Color.R, point.Color.G, NormalizeColorChannel(val, type), point.Color.A);
                     break;
                 case "alpha" or "a":
-                    point.Color = new Color4(point.Color.R, point.Color.G, point.Color.B, val > 1 ? val / 255f : val);
+                    point.Color = new Color4(point.Color.R, point.Color.G, point.Color.B, NormalizeColorChannel(val, type));
                     break;
                 case "nx": point.Normal.X = val; break;
                 case "ny": point.Normal.Y = val; break;
                 case "nz": point.Normal.Z = val; break;
                 case "intensity" or "scalar_intensity":
-                    point.Intensity = val > 1 ? val / 65535f : val;
+                    point.Intensity = NormalizeIntensity(val, type);
                     break;
                 default:
                     // Store as scalar
@@ -1091,6 +1092,37 @@ public class OctreeFlowReader : IDisposable
         }
 
         return point;
+    }
+
+    /// <summary>
+    /// Normalizes a color channel value to 0-1 range based on the actual PLY data type.
+    /// UInt8 (0-255), UInt16 (0-65535), Float (assumed 0-1 or uses heuristic).
+    /// </summary>
+    private static float NormalizeColorChannel(float rawValue, PlyDataType type)
+    {
+        return type switch
+        {
+            PlyDataType.UInt8 or PlyDataType.Int8 => rawValue / 255f,
+            PlyDataType.UInt16 or PlyDataType.Int16 => rawValue / 65535f,
+            PlyDataType.UInt32 or PlyDataType.Int32 => rawValue / 255f,
+            // Float types: use heuristic (could be 0-1 already, or 0-255 from some exporters)
+            _ => rawValue > 1f ? rawValue / 255f : rawValue
+        };
+    }
+
+    /// <summary>
+    /// Normalizes an intensity value to 0-1 range based on the actual PLY data type.
+    /// </summary>
+    private static float NormalizeIntensity(float rawValue, PlyDataType type)
+    {
+        return type switch
+        {
+            PlyDataType.UInt8 or PlyDataType.Int8 => rawValue / 255f,
+            PlyDataType.UInt16 or PlyDataType.Int16 => rawValue / 65535f,
+            PlyDataType.UInt32 or PlyDataType.Int32 => rawValue / 65535f,
+            // Float types: use heuristic
+            _ => rawValue > 1f ? rawValue / 65535f : rawValue
+        };
     }
 
     private void EnsureInitialized()

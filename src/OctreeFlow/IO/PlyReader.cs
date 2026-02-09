@@ -272,7 +272,7 @@ public class PlyReader
                 values[j] = ReadBinaryValue(reader, properties[j].Type, bigEndian);
             }
 
-            var point = ParsePointFromFloatValues(values, propMap);
+            var point = ParsePointFromFloatValues(values, propMap, properties);
             cloud.AddPoint(point);
         }
     }
@@ -354,10 +354,10 @@ public class PlyReader
                 floatValues[i] = f;
             }
         }
-        return ParsePointFromFloatValues(floatValues, propMap);
+        return ParsePointFromFloatValues(floatValues, propMap, properties);
     }
 
-    private PointData ParsePointFromFloatValues(float[] values, Dictionary<string, int> propMap)
+    private PointData ParsePointFromFloatValues(float[] values, Dictionary<string, int> propMap, List<PlyProperty> properties)
     {
         var point = new PointData();
 
@@ -367,27 +367,28 @@ public class PlyReader
         if (propMap.TryGetValue("z", out int zi)) point.Position.Z = values[zi];
 
         // Color (red/r, green/g, blue/b, alpha/a)
+        // Use actual PLY data type for correct normalization (uchar=0-255, ushort=0-65535, float=0-1)
         float r = 1f, g = 1f, b = 1f, a = 1f;
 
         if (propMap.TryGetValue("red", out int ri))
-            r = values[ri] > 1 ? values[ri] / 255f : values[ri];
+            r = NormalizeColorChannel(values[ri], properties[ri].Type);
         else if (propMap.TryGetValue("r", out ri))
-            r = values[ri] > 1 ? values[ri] / 255f : values[ri];
+            r = NormalizeColorChannel(values[ri], properties[ri].Type);
 
         if (propMap.TryGetValue("green", out int gi))
-            g = values[gi] > 1 ? values[gi] / 255f : values[gi];
+            g = NormalizeColorChannel(values[gi], properties[gi].Type);
         else if (propMap.TryGetValue("g", out gi))
-            g = values[gi] > 1 ? values[gi] / 255f : values[gi];
+            g = NormalizeColorChannel(values[gi], properties[gi].Type);
 
         if (propMap.TryGetValue("blue", out int bi))
-            b = values[bi] > 1 ? values[bi] / 255f : values[bi];
+            b = NormalizeColorChannel(values[bi], properties[bi].Type);
         else if (propMap.TryGetValue("b", out bi))
-            b = values[bi] > 1 ? values[bi] / 255f : values[bi];
+            b = NormalizeColorChannel(values[bi], properties[bi].Type);
 
         if (propMap.TryGetValue("alpha", out int ai))
-            a = values[ai] > 1 ? values[ai] / 255f : values[ai];
+            a = NormalizeColorChannel(values[ai], properties[ai].Type);
         else if (propMap.TryGetValue("a", out ai))
-            a = values[ai] > 1 ? values[ai] / 255f : values[ai];
+            a = NormalizeColorChannel(values[ai], properties[ai].Type);
 
         point.Color = new Color4(r, g, b, a);
 
@@ -396,19 +397,14 @@ public class PlyReader
         if (propMap.TryGetValue("ny", out int nyi)) point.Normal.Y = values[nyi];
         if (propMap.TryGetValue("nz", out int nzi)) point.Normal.Z = values[nzi];
 
-        // Intensity
+        // Intensity - use type-aware normalization
         if (propMap.TryGetValue("intensity", out int ii))
         {
-            point.Intensity = values[ii];
-            // Normalize if needed (common LiDAR range is 0-65535)
-            if (point.Intensity > 1)
-                point.Intensity /= 65535f;
+            point.Intensity = NormalizeIntensity(values[ii], properties[ii].Type);
         }
         else if (propMap.TryGetValue("scalar_intensity", out ii))
         {
-            point.Intensity = values[ii];
-            if (point.Intensity > 1)
-                point.Intensity /= 65535f;
+            point.Intensity = NormalizeIntensity(values[ii], properties[ii].Type);
         }
 
         // Additional scalars
@@ -429,6 +425,36 @@ public class PlyReader
         }
 
         return point;
+    }
+
+    /// <summary>
+    /// Normalizes a color channel value to 0-1 range based on the actual PLY data type.
+    /// </summary>
+    private static float NormalizeColorChannel(float rawValue, PlyType type)
+    {
+        return type switch
+        {
+            PlyType.UInt8 or PlyType.UChar or PlyType.Int8 or PlyType.Char => rawValue / 255f,
+            PlyType.UInt16 or PlyType.UShort or PlyType.Int16 or PlyType.Short => rawValue / 65535f,
+            PlyType.UInt32 or PlyType.UInt or PlyType.Int32 or PlyType.Int => rawValue / 255f,
+            // Float types: use heuristic (could be 0-1 already, or 0-255 from some exporters)
+            _ => rawValue > 1f ? rawValue / 255f : rawValue
+        };
+    }
+
+    /// <summary>
+    /// Normalizes an intensity value to 0-1 range based on the actual PLY data type.
+    /// </summary>
+    private static float NormalizeIntensity(float rawValue, PlyType type)
+    {
+        return type switch
+        {
+            PlyType.UInt8 or PlyType.UChar or PlyType.Int8 or PlyType.Char => rawValue / 255f,
+            PlyType.UInt16 or PlyType.UShort or PlyType.Int16 or PlyType.Short => rawValue / 65535f,
+            PlyType.UInt32 or PlyType.UInt or PlyType.Int32 or PlyType.Int => rawValue / 65535f,
+            // Float types: use heuristic
+            _ => rawValue > 1f ? rawValue / 65535f : rawValue
+        };
     }
 }
 
