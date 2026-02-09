@@ -347,6 +347,7 @@ public class PlyIndex : IDisposable
 
         var headerBytes = new List<byte>();
         bool foundEndHeader = false;
+        bool inVertexElement = false;
 
         // Read header line by line
         while (!foundEndHeader)
@@ -375,15 +376,20 @@ public class PlyIndex : IDisposable
                     };
                 }
             }
-            else if (trimmed.StartsWith("element vertex", StringComparison.OrdinalIgnoreCase))
+            else if (trimmed.StartsWith("element", StringComparison.OrdinalIgnoreCase))
             {
                 var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 3)
+                if (parts.Length >= 3 && parts[1].Equals("vertex", StringComparison.OrdinalIgnoreCase))
                 {
                     VertexCount = int.Parse(parts[2], CultureInfo.InvariantCulture);
+                    inVertexElement = true;
+                }
+                else
+                {
+                    inVertexElement = false;
                 }
             }
-            else if (trimmed.StartsWith("property", StringComparison.OrdinalIgnoreCase) && !trimmed.Contains("list"))
+            else if (trimmed.StartsWith("property", StringComparison.OrdinalIgnoreCase) && !trimmed.Contains("list") && inVertexElement)
             {
                 var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length >= 3)
