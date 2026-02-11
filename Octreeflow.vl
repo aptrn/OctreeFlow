@@ -3984,7 +3984,7 @@
                       <Pin Id="D7FA6RseasLQMZhvzxGJKq" Name="Input" Kind="StateInputPin" />
                       <Pin Id="MprCN7tcsb6Mqc9mGBCbhr" Name="Output" Kind="StateOutputPin" />
                     </Node>
-                    <Node Bounds="4073,3290,185,26" Id="LTtJfzKNV1ILqm914lTwU4">
+                    <Node Bounds="4048,3240,185,26" Id="LTtJfzKNV1ILqm914lTwU4">
                       <p:NodeReference LastCategoryFullName="OctreeFlow.Api.NodeInfo" LastDependency="OctreeFlow.csproj">
                         <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                         <FullNameCategoryReference ID="OctreeFlow.Api.NodeInfo" />
@@ -4062,7 +4062,7 @@
                       <Pin Id="CTSsXbv8lFGNxe2DqGWb5k" Name="Box" Kind="InputPin" />
                       <Pin Id="KrqrgCaV9dTMT0yjsWRRDh" Name="Result" Kind="OutputPin" />
                     </Node>
-                    <Node Bounds="3863,3320,31,19" Id="PywXqzZi7dyOMlMOhIDiB0">
+                    <Node Bounds="3887,3320,31,19" Id="PywXqzZi7dyOMlMOhIDiB0">
                       <p:NodeReference LastCategoryFullName="Primitive.Integer32" LastDependency="VL.CoreLib.vl">
                         <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                         <CategoryReference Kind="Int32Type" Name="Integer32" NeedsToBeDirectParent="true" />
@@ -4072,13 +4072,21 @@
                       <Pin Id="TwN2osBaS2xNKZTDm7LPiL" Name="Input 2" Kind="InputPin" />
                       <Pin Id="TtrDzEiDWVZLKI0ncFE5vc" Name="Result" Kind="OutputPin" />
                     </Node>
+                    <Pad Id="DpYmsAzoDNgMdQWBFtSn5t" Comment="" Bounds="3713,3261,35,35" ShowValueBox="true" isIOBox="true" Value="True">
+                      <p:TypeAnnotation LastCategoryFullName="Primitive" LastDependency="VL.CoreLib.vl">
+                        <Choice Kind="ImmutableTypeFlag" Name="Boolean" />
+                      </p:TypeAnnotation>
+                      <p:ValueBoxSettings>
+                        <p:buttonmode p:Assembly="VL.UI.Forms" p:Type="VL.HDE.PatchEditor.Editors.ButtonModeEnum">Toggle</p:buttonmode>
+                      </p:ValueBoxSettings>
+                    </Pad>
                   </Patch>
                   <ControlPoint Id="OjVe48AepMnNDJRDthGgPD" Bounds="3551,3410" Alignment="Bottom" />
                   <ControlPoint Id="OMAvilZ613IPVB6pj1SvyS" Bounds="3551,3061" Alignment="Top" />
                   <ControlPoint Id="KEiuq5Ow2CtPFErd9d7J6w" Bounds="4022,3410" Alignment="Bottom" />
                   <ControlPoint Id="HMl31SOl56lOuAbNjRreK5" Bounds="4022,3061" Alignment="Top" />
                 </Node>
-                <Node Bounds="3891,3030,111,19" Id="DQZBDMZAMPlNwsk3OjwNQO">
+                <Node Bounds="3893,3010,111,19" Id="DQZBDMZAMPlNwsk3OjwNQO">
                   <p:NodeReference LastCategoryFullName="3D.Collision" LastDependency="VL.CoreLib.vl">
                     <Choice Kind="NodeFlag" Name="Node" Fixed="true" />
                     <Choice Kind="OperationCallFlag" Name="FrustumContainsBox" />
@@ -5059,7 +5067,6 @@
           <Link Id="BQwTl5hpWzrMUcnlC1iLI8" Ids="RENRUhp1SHINAmLRjHHpxo,OBMrvYLA3nDPim9kvAWj4W" />
           <Link Id="VZv7FrCigzDOKwiHZuusVv" Ids="P9EIc2V7gZCNjg0jYqUocZ,RPPrO9DxPQeNzJrbu6EQgo" />
           <Link Id="DQGg6rqlXeJL9ykJ3glH05" Ids="IKzk4mVVrLMOM6dcudxxUp,HPmavGilWcpL26KDToiYbO" />
-          <Link Id="JiCmlXKqHGKOekdlXi0cxE" Ids="RsAR2q1BIyLPQtXul3qqpi,AsoQZior7h5PoCTpncUVRo" />
           <Link Id="ALPP0wpu8C2LdNqH1UuqqG" Ids="JzsKJlO4NeOMWoZiL3MnKc,D7FA6RseasLQMZhvzxGJKq" />
           <Link Id="Sg1iOTxNW2OLcwbIAAcAYi" Ids="KM7qocfZw9WLVMXfG1CvNR,TLBKQTMrxGEMplK2731j0v" />
           <Link Id="TMOojfNapPnQV0u9KXRp4U" Ids="MNWDSRAmNzOL6Rna8oZiK4,Q0PuK6v7BMCPK7DmwtNumB" />
@@ -5073,7 +5080,6 @@
           <Link Id="L2a8H5sguyMOo76JIT1alc" Ids="TPVMAl5E58JNgDTKT3drDC,OjVe48AepMnNDJRDthGgPD" />
           <Link Id="QHDPNFeGflEQQDgFEUOZvS" Ids="OjVe48AepMnNDJRDthGgPD,N5Ae3fI99QBOisnBpg6wdM" />
           <Link Id="OJrWIRQF2PXOsDStNaUr86" Ids="HMl31SOl56lOuAbNjRreK5,KEiuq5Ow2CtPFErd9d7J6w" IsFeedback="true" />
-          <Link Id="RHPGa7ELB2uPFrai182Z3e" Ids="GPmd71gMAEJM7ts46poBR2,KEiuq5Ow2CtPFErd9d7J6w" />
           <Link Id="HUAqESn2H8dLwuKG5NnLPB" Ids="FCh4eJ5XRshNogBs2tFSPG,Nr70RF5DBZZQQIhP03WBJz" />
           <Link Id="B4vhvqa2xKuOyqdXLTIo6r" Ids="STlGxBbsK8lLxrwRLPVeyz,QJbvfkZhsVzMEjsfhW8Gv6" />
           <Link Id="OvgGDXNBSJrNloXjEokk25" Ids="GPYvO8gVx4iNvcwtP1BfG0,JwnuESMtwm8Nw062TkDxXy" />
@@ -5143,7 +5149,6 @@
           <Link Id="QVbcHIog62KOAtwGSpqsFP" Ids="IG3u6EUBFlKN5Kshj1Laoh,HVHKWNpwwGeQVOHDOVVe32" />
           <Link Id="S6vRdZTeoslPmlwR5RZf7m" Ids="DnZGYnpAJ3nMafkRlkU58P,C38oHX7Hg7gNeGYBx3vYUh" />
           <Link Id="STxR2WtaiazObqcdJb8U6j" Ids="DnZGYnpAJ3nMafkRlkU58P,S0afyqR6FuVLdxSenHy7fY" />
-          <Link Id="LJNT3zaoqedN1qrZi52qZs" Ids="TtrDzEiDWVZLKI0ncFE5vc,JLYxOgO2la5QVGiFkgVZHO" />
           <Link Id="IZDmSMdmyoyL86rj5GKi6q" Ids="IG3u6EUBFlKN5Kshj1Laoh,TwN2osBaS2xNKZTDm7LPiL" />
           <Link Id="SjcbsmFI2npP1U1B6LHvwY" Ids="ISAGVPaK8G5OtLGDbhbvFu,VkdMcCvzFVBO2yuS1bRoqW" />
           <Link Id="MEbYpFWUB9XMQRvnSLSg0q" Ids="DnZGYnpAJ3nMafkRlkU58P,QcDupRLOsRWOTIrJrsB3hX" />
@@ -5164,6 +5169,9 @@
           <Link Id="LcfwEImi0M7OW6ltgAGJVW" Ids="U80Q9YhM8BoMIuGZp0lLsS,N5f7SXQCvB7LAdPMKTdk1i" />
           <Link Id="FC88ZeATbtRMs7PQjNJjVn" Ids="N5f7SXQCvB7LAdPMKTdk1i,I1YwhSmeM0IOmPQzURZomL" />
           <Link Id="NwJVLwDqQYeQDx1uqS4N7x" Ids="I1YwhSmeM0IOmPQzURZomL,BxhrR4wSTgNLPjm8TcO0I6" IsHidden="true" />
+          <Link Id="GxGXAuhMruOLaLk5pSOcIU" Ids="GPmd71gMAEJM7ts46poBR2,KEiuq5Ow2CtPFErd9d7J6w" />
+          <Link Id="Kv2tZfbw87CO93hLAacEAh" Ids="RsAR2q1BIyLPQtXul3qqpi,AsoQZior7h5PoCTpncUVRo" />
+          <Link Id="HvWjV77LISUM4aWUVZ8sWd" Ids="DpYmsAzoDNgMdQWBFtSn5t,JLYxOgO2la5QVGiFkgVZHO" />
         </Patch>
       </Node>
       <!--
