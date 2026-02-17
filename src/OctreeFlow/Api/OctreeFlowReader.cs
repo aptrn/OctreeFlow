@@ -769,6 +769,17 @@ public class OctreeFlowReader : IDisposable
     }
 
     /// <summary>
+    /// Empties the RAM cache. Use this to free memory or force a full reload on the next update.
+    /// Cached traversal and frame results are invalidated so the next call reflects correct cache status.
+    /// </summary>
+    public void ClearCache()
+    {
+        _cache?.Clear();
+        _cachedTraversalResult = null;
+        _cachedFrameUpdateResult = null;
+    }
+
+    /// <summary>
     /// Loads specified nodes into RAM cache.
     /// </summary>
     /// <param name="nodes">Nodes to load into cache.</param>
