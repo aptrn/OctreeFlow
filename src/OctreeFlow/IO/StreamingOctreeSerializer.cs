@@ -10,7 +10,7 @@ namespace OctreeFlow.IO;
 /// The .octree file contains only the structure with point indices - no point data.
 /// Point indices reference the original PLY file, keeping the .octree file small.
 /// 
-/// File format (Version 5):
+/// File format (Version 6):
 /// - Magic: "OCTR" (4 bytes)
 /// - Version: int32
 /// - Total points in PLY: int32
@@ -26,13 +26,20 @@ namespace OctreeFlow.IO;
 ///   - BoundingBox: 6 x float32
 ///   - Point count: int32
 ///   - Point indices: N x int32 (raw binary)
+///   - HasMetadata: int32 (1 = metadata present, 0 = not computed)
+///   - [if HasMetadata] AverageColor: 4 x float32 (RGBA, 0-1)
+///   - [if HasMetadata] PointDensityRaw: float32 (points per unit volume)
+///   - [if HasMetadata] PointDensity: float32 (normalized 0-1)
 ///   - Child count: int32
 ///   - Children: recursively written
+///
+/// Version 5: same as v6 but without the HasMetadata block.
+/// Version 4: same as v5 but without PointsPerNode in header.
 /// </summary>
 public class StreamingOctreeSerializer
 {
     private static readonly byte[] Magic = { 0x4F, 0x43, 0x54, 0x52 }; // "OCTR"
-    private const int CurrentVersion = 5; // Version 5: added PointsPerNode config
+    private const int CurrentVersion = 6; // Version 6: added per-node metadata (AverageColor, PointDensity)
 
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -147,6 +154,18 @@ public class StreamingOctreeSerializer
             }
         }
 
+        // Write per-node metadata (v6+)
+        writer.Write(node.HasMetadata ? 1 : 0);
+        if (node.HasMetadata)
+        {
+            writer.Write(node.AverageColor.R);
+            writer.Write(node.AverageColor.G);
+            writer.Write(node.AverageColor.B);
+            writer.Write(node.AverageColor.A);
+            writer.Write(node.PointDensityRaw);
+            writer.Write(node.PointDensity);
+        }
+
         // Write children count
         int childCount = node.Children?.Count ?? 0;
         writer.Write(childCount);
@@ -215,7 +234,7 @@ public class StreamingOctreeSerializer
         // Read version
         int version = reader.ReadInt32();
         if (version < 4 || version > CurrentVersion)
-            throw new FormatException($"Unsupported .octree file version: {version} (supported: 4-{CurrentVersion})");
+            throw new FormatException($"Unsupported .octree file version: {version} (supported: 4–{CurrentVersion})");
 
         // Read header info
         int totalPoints = reader.ReadInt32();
@@ -247,7 +266,7 @@ public class StreamingOctreeSerializer
         int nodeCount = reader.ReadInt32();
 
         // Read root node (recursively reads all nodes)
-        var root = ReadNode(reader);
+        var root = ReadNode(reader, version);
 
         var info = new OctreeFileInfo
         {
@@ -266,7 +285,7 @@ public class StreamingOctreeSerializer
     /// <summary>
     /// Reads a single node and its children recursively.
     /// </summary>
-    private OctreeNode ReadNode(BinaryReader reader)
+    private OctreeNode ReadNode(BinaryReader reader, int version)
     {
         // Read node ID
         string id = ReadString(reader);
@@ -292,13 +311,30 @@ public class StreamingOctreeSerializer
             node.AddPointIndex(reader.ReadInt32());
         }
 
+        // Read per-node metadata (v6+)
+        if (version >= 6)
+        {
+            int hasMetadata = reader.ReadInt32();
+            if (hasMetadata != 0)
+            {
+                node.AverageColor = new Color4(
+                    reader.ReadSingle(),
+                    reader.ReadSingle(),
+                    reader.ReadSingle(),
+                    reader.ReadSingle());
+                node.PointDensityRaw = reader.ReadSingle();
+                node.PointDensity = reader.ReadSingle();
+                node.HasMetadata = true;
+            }
+        }
+
         // Read children count
         int childCount = reader.ReadInt32();
 
         // Read children recursively
         for (int i = 0; i < childCount; i++)
         {
-            node.AddChild(ReadNode(reader));
+            node.AddChild(ReadNode(reader, version));
         }
 
         return node;

@@ -27,6 +27,10 @@ class Program
         var batchCommand = CreateBatchCommand();
         rootCommand.AddCommand(batchCommand);
 
+        // Update command (add/refresh per-node metadata without rebuilding)
+        var updateCommand = CreateUpdateCommand();
+        rootCommand.AddCommand(updateCommand);
+
         return await rootCommand.InvokeAsync(args);
     }
 
@@ -75,6 +79,11 @@ class Program
             getDefaultValue: () => 0,
             description: "Number of threads to use (0 = auto-detect based on CPU cores)");
 
+        var skipMetadataOption = new Option<bool>(
+            aliases: new[] { "--skip-metadata" },
+            getDefaultValue: () => false,
+            description: "Skip computing per-node metadata (average color, point density) after build");
+
         var buildCommand = new Command("build", "Build an octree from a PLY file")
         {
             inputOption,
@@ -85,7 +94,8 @@ class Program
             seedOption,
             maxDepthOption,
             verboseOption,
-            threadsOption
+            threadsOption,
+            skipMetadataOption
         };
 
         buildCommand.SetHandler(async (context) =>
@@ -99,8 +109,9 @@ class Program
             var maxDepth = context.ParseResult.GetValueForOption(maxDepthOption);
             var verbose = context.ParseResult.GetValueForOption(verboseOption);
             var threads = context.ParseResult.GetValueForOption(threadsOption);
+            var skipMetadata = context.ParseResult.GetValueForOption(skipMetadataOption);
 
-            await BuildOctree(input, output, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose, threads);
+            await BuildOctree(input, output, pointsPerNode, minDistance, ratio, seed, maxDepth, verbose, threads, skipMetadata);
         });
 
         return buildCommand;
@@ -135,7 +146,8 @@ class Program
         int? seed,
         int maxDepth,
         bool verbose,
-        int threads)
+        int threads,
+        bool skipMetadata = false)
     {
         if (!input.Exists)
         {
@@ -275,6 +287,50 @@ class Program
             Console.WriteLine($"  Properties:     {string.Join(", ", plyIndex.Properties.Select(p => p.Name))}");
         }
         Console.WriteLine();
+
+        // Compute per-node metadata (average color, point density)
+        if (!skipMetadata && plyIndex != null)
+        {
+            Console.Write("Computing node metadata... ");
+            stopwatch.Restart();
+            int lastMetaPhase = -1;
+            int lastMetaPercent = -1;
+            var lastMetaTime = DateTime.UtcNow;
+
+            try
+            {
+                var metaComputer = new NodeMetadataComputer();
+                metaComputer.OnProgress = (phase, current, total) =>
+                {
+                    int pct = total > 0 ? (int)(100.0 * current / total) : 0;
+                    var now = DateTime.UtcNow;
+                    if (pct != lastMetaPercent || phase != lastMetaPhase || (now - lastMetaTime).TotalMilliseconds > 250)
+                    {
+                        lastMetaPercent = pct;
+                        lastMetaPhase = phase;
+                        lastMetaTime = now;
+                        string phaseName = phase == 0 ? "Mapping" : "Colors";
+                        Console.Write($"\rComputing node metadata... {phaseName}: {pct}%   ");
+                    }
+                };
+                metaComputer.Compute(root, plyIndex);
+                stopwatch.Stop();
+                Console.Write("\r                                                          \r");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("Computing node metadata... Done!");
+                Console.ResetColor();
+                Console.WriteLine($" ({FormatTime(stopwatch.Elapsed)})");
+                Console.WriteLine();
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"\nWarning: Metadata computation failed ({ex.Message}). Saving without metadata.");
+                Console.ResetColor();
+                Console.WriteLine();
+            }
+        }
 
         // Save files
         Console.Write("Saving .octree file... ");
@@ -464,6 +520,227 @@ class Program
         if (time.TotalSeconds >= 1)
             return $"{time.TotalSeconds:F1} seconds";
         return $"{time.TotalMilliseconds:F0}ms";
+    }
+
+    static Command CreateUpdateCommand()
+    {
+        var inputOption = new Option<string>(
+            aliases: new[] { "--input", "-i" },
+            description: "Path to a .octree file or a folder containing .octree files to update")
+        { IsRequired = true };
+
+        var plyOption = new Option<string?>(
+            aliases: new[] { "--ply", "-p" },
+            description: "Override PLY file path (single-file mode only; ignored for folder input)");
+
+        var recursiveOption = new Option<bool>(
+            aliases: new[] { "--recursive", "-r" },
+            getDefaultValue: () => false,
+            description: "Search for .octree files recursively in subfolders (folder mode only)");
+
+        var forceOption = new Option<bool>(
+            aliases: new[] { "--force" },
+            getDefaultValue: () => false,
+            description: "Recompute metadata even if the file already has it");
+
+        var updateCommand = new Command(
+            "update",
+            "Recompute per-node metadata (average color, point density) for existing .octree files without rebuilding")
+        {
+            inputOption,
+            plyOption,
+            recursiveOption,
+            forceOption
+        };
+
+        updateCommand.SetHandler(async (context) =>
+        {
+            var input = context.ParseResult.GetValueForOption(inputOption)!;
+            var ply = context.ParseResult.GetValueForOption(plyOption);
+            var recursive = context.ParseResult.GetValueForOption(recursiveOption);
+            var force = context.ParseResult.GetValueForOption(forceOption);
+            await UpdateOctreeFiles(input, ply, recursive, force);
+        });
+
+        return updateCommand;
+    }
+
+    static Task UpdateOctreeFiles(string inputPath, string? plyOverride, bool recursive, bool force)
+    {
+        Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║              OctreeFlow Metadata Updater                     ║");
+        Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        // Collect .octree files to process.
+        List<string> octreeFiles;
+        if (File.Exists(inputPath) && inputPath.EndsWith(".octree", StringComparison.OrdinalIgnoreCase))
+        {
+            octreeFiles = new List<string> { inputPath };
+        }
+        else if (Directory.Exists(inputPath))
+        {
+            var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            octreeFiles = Directory
+                .GetFiles(inputPath, "*.octree", searchOption)
+                .OrderBy(f => f)
+                .ToList();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error: '{inputPath}' is not a valid .octree file or directory.");
+            Console.ResetColor();
+            return Task.CompletedTask;
+        }
+
+        if (octreeFiles.Count == 0)
+        {
+            Console.WriteLine("No .octree files found.");
+            return Task.CompletedTask;
+        }
+
+        Console.WriteLine($"Found {octreeFiles.Count} .octree file(s) to process.");
+        Console.WriteLine();
+
+        int processed = 0, skipped = 0, failed = 0;
+        var serializer = new StreamingOctreeSerializer();
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+
+        foreach (var octreePath in octreeFiles)
+        {
+            Console.WriteLine($"[{processed + skipped + failed + 1}/{octreeFiles.Count}] {Path.GetFileName(octreePath)}");
+
+            try
+            {
+                // Load the octree.
+                var (root, fileInfo) = serializer.LoadOctreeFile(octreePath);
+                if (root == null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("  Skipped: could not load octree root.");
+                    Console.ResetColor();
+                    skipped++;
+                    continue;
+                }
+
+                // Check if metadata is already present (check root node).
+                if (!force && root.HasMetadata)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine("  Skipped: metadata already up-to-date (use --force to recompute).");
+                    Console.ResetColor();
+                    skipped++;
+                    continue;
+                }
+
+                // Resolve PLY path.
+                string plyPath = plyOverride ?? fileInfo.PlyPath;
+                if (!File.Exists(plyPath))
+                {
+                    // Try the PLY next to the .octree file using the stored filename.
+                    string adjacent = Path.Combine(
+                        Path.GetDirectoryName(octreePath) ?? ".",
+                        Path.GetFileName(fileInfo.PlyPath));
+                    if (File.Exists(adjacent))
+                        plyPath = adjacent;
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"  Error: PLY file not found: {plyPath}");
+                        Console.ResetColor();
+                        failed++;
+                        continue;
+                    }
+                }
+
+                Console.WriteLine($"  PLY: {plyPath}");
+
+                // Build PLY header index (header only — bounds come from octree file).
+                var plyIndex = new PlyIndex(plyPath);
+                plyIndex.BuildIndexHeaderOnly();
+                plyIndex.SetBounds(fileInfo.Bounds);
+
+                // Compute metadata.
+                Console.Write("  Computing metadata... ");
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                int lastPhase = -1, lastPct = -1;
+                var lastTime = DateTime.UtcNow;
+
+                var computer = new NodeMetadataComputer();
+                computer.OnProgress = (phase, current, total) =>
+                {
+                    int pct = total > 0 ? (int)(100.0 * current / total) : 0;
+                    var now = DateTime.UtcNow;
+                    if (pct != lastPct || phase != lastPhase || (now - lastTime).TotalMilliseconds > 250)
+                    {
+                        lastPct = pct; lastPhase = phase; lastTime = now;
+                        string phaseName = phase == 0 ? "Mapping" : "Colors";
+                        Console.Write($"\r  Computing metadata... {phaseName}: {pct}%   ");
+                    }
+                };
+                computer.Compute(root, plyIndex);
+                plyIndex.Dispose();
+
+                sw.Stop();
+                Console.Write("\r                                                          \r");
+                Console.Write("  Computing metadata... ");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("Done!");
+                Console.ResetColor();
+                Console.WriteLine($" ({FormatTime(sw.Elapsed)})");
+
+                // Save updated octree to a temp file, then replace the original.
+                string tempPath = octreePath + ".tmp";
+                Console.Write("  Saving... ");
+                sw.Restart();
+
+                // Rebuild a minimal PlyIndex for serialization (needs VertexCount + Properties).
+                // We can reconstruct this from fileInfo.
+                var savePlyIndex = new PlyIndex(plyPath);
+                savePlyIndex.BuildIndexHeaderOnly();
+                savePlyIndex.SetBounds(fileInfo.Bounds);
+
+                serializer.SaveOctreeFile(root, savePlyIndex, fileInfo.PlyPath, tempPath, fileInfo.PointsPerNode);
+                savePlyIndex.Dispose();
+
+                File.Move(tempPath, octreePath, overwrite: true);
+                sw.Stop();
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("Done!");
+                Console.ResetColor();
+                Console.WriteLine($" ({FormatTime(sw.Elapsed)})");
+                processed++;
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"  Error: {ex.Message}");
+                Console.ResetColor();
+                failed++;
+            }
+
+            Console.WriteLine();
+        }
+
+        totalSw.Stop();
+        Console.WriteLine("════════════════════════════════════════════════════════════════");
+        Console.WriteLine($"Total time:  {FormatTime(totalSw.Elapsed)}");
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Updated:     {processed}");
+        Console.ResetColor();
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"Skipped:     {skipped}");
+        Console.ResetColor();
+        if (failed > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Failed:      {failed}");
+            Console.ResetColor();
+        }
+
+        return Task.CompletedTask;
     }
 
     static Command CreateTraverseCommand()
@@ -875,7 +1152,7 @@ class Program
         var filesToProcess = new List<FileInfo>();
         var skippedFiles = new List<(FileInfo file, string reason)>();
 
-        const int LatestVersion = 5; // Must match StreamingOctreeSerializer.CurrentVersion
+        const int LatestVersion = 6; // Must match StreamingOctreeSerializer.CurrentVersion
 
         foreach (var plyFile in plyFiles)
         {

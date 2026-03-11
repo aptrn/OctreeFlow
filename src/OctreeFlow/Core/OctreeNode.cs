@@ -80,6 +80,33 @@ public class OctreeNode
     /// </summary>
     public int DataSize { get; set; }
 
+    /// <summary>
+    /// Average color of all points in this node (RGBA, normalized 0–1).
+    /// Requires metadata computation after build. Defaults to white (1,1,1,1) when not computed.
+    /// </summary>
+    [JsonIgnore]
+    public Color4 AverageColor { get; set; } = new Color4(1f, 1f, 1f, 1f);
+
+    /// <summary>
+    /// Raw point density: points per unit volume of the bounding box.
+    /// Requires metadata computation after build. 0 when not computed.
+    /// </summary>
+    [JsonIgnore]
+    public float PointDensityRaw { get; set; }
+
+    /// <summary>
+    /// Normalized point density in [0, 1], where 1 is the densest node in the tree.
+    /// Requires metadata computation after build. 0 when not computed.
+    /// </summary>
+    [JsonIgnore]
+    public float PointDensity { get; set; }
+
+    /// <summary>
+    /// True if per-node metadata (AverageColor, PointDensity) has been computed and stored.
+    /// </summary>
+    [JsonIgnore]
+    public bool HasMetadata { get; set; }
+
     public OctreeNode()
     {
         Id = "0_0_0_0";
