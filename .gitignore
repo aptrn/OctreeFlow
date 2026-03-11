@@ -13,3 +13,4 @@ prompts/*
 .idea/*
 *.ply
 *.octree
+TODO.md
