@@ -458,8 +458,11 @@ public class OctreeFlowReader : IDisposable
         });
     }
 
+    private int _nextNodeIntId;
+
     private void BuildNodeInfoCache(OctreeNode node)
     {
+        node.IntId = _nextNodeIntId++;
         var info = new NodeInfo(node);
         _nodeInfoCache[node.Id] = info;
 

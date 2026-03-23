@@ -15,6 +15,13 @@ public class OctreeNode
     public string Id { get; set; }
 
     /// <summary>
+    /// Sequential integer identity assigned at load time (0 = root, DFS order).
+    /// Not persisted — assigned by OctreeFlowReader during initialization.
+    /// </summary>
+    [JsonIgnore]
+    public int IntId { get; set; } = -1;
+
+    /// <summary>
     /// The bounding box defining this node's spatial extent.
     /// </summary>
     [JsonIgnore]
