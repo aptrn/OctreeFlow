@@ -182,49 +182,60 @@ public class SectorData
 
     /// <summary>
     /// Creates SectorData from PointData array.
+    /// Feature keys use the Point_ prefix convention (e.g., "Point_Position", "Point_Color").
     /// </summary>
     /// <param name="sectorIndex">Index of the sector.</param>
     /// <param name="byteOffsetVector4">Byte offset for Vector4 data.</param>
     /// <param name="byteOffsetFloat">Byte offset for float data.</param>
-    /// <param name="nodeId">Node ID.</param>
+    /// <param name="nodeId">String node ID.</param>
+    /// <param name="nodeIntId">Integer node ID (NodeInfo.NodeId). Written to Point_NodeID.</param>
     /// <param name="level">Octree level.</param>
     /// <param name="points">Point data array.</param>
-    /// <param name="availableVector4Features">Set of Vector4 feature names that should be included (e.g., "Position", "Colors", "Normals"). Only features in this set will be added.</param>
-    /// <param name="availableFloat32Features">Set of Float32 feature names that should be included (e.g., "Intensity", scalar names). Only features in this set will be added.</param>
+    /// <param name="availableVector4Features">Set of Vector4 feature names (e.g., "Point_Position").</param>
+    /// <param name="availableFloat32Features">Set of Float32 feature names (e.g., "Point_Intensity").</param>
     public static SectorData FromPointData(
-        int sectorIndex, 
-        int byteOffsetVector4, 
-        int byteOffsetFloat, 
-        string nodeId, 
-        int level, 
+        int sectorIndex,
+        int byteOffsetVector4,
+        int byteOffsetFloat,
+        string nodeId,
+        int nodeIntId,
+        int level,
         PointData[] points,
         ISet<string> availableVector4Features,
         ISet<string> availableFloat32Features)
     {
-        return FromPointData(sectorIndex, byteOffsetVector4, byteOffsetFloat, 0, nodeId, level, points, 
-            availableVector4Features, availableFloat32Features, new HashSet<string>());
+        return FromPointData(sectorIndex, byteOffsetVector4, byteOffsetFloat, 0, nodeId, nodeIntId, level,
+            points, availableVector4Features, availableFloat32Features, new HashSet<string>());
     }
 
     /// <summary>
     /// Creates SectorData from PointData array with integer feature support.
+    /// Feature keys use the Point_ prefix convention (e.g., "Point_Position", "Point_Level").
+    /// Point_NodeID is automatically filled with nodeIntId for all points in this sector.
     /// </summary>
     /// <param name="sectorIndex">Index of the sector.</param>
     /// <param name="byteOffsetVector4">Byte offset for Vector4 data.</param>
     /// <param name="byteOffsetFloat">Byte offset for float data.</param>
     /// <param name="byteOffsetInt32">Byte offset for int32 data.</param>
-    /// <param name="nodeId">Node ID.</param>
+    /// <param name="nodeId">String node ID.</param>
+    /// <param name="nodeIntId">
+    /// Integer node ID (NodeInfo.NodeId, DFS sequential 0…TotalNodes−1).
+    /// Written into the Point_NodeID buffer so shaders can cross-reference BF buffers:
+    ///   float density = BF_Density[Point_NodeID[pointId]];
+    /// </param>
     /// <param name="level">Octree level.</param>
     /// <param name="points">Point data array.</param>
-    /// <param name="availableVector4Features">Set of Vector4 feature names that should be included (e.g., "Position", "Colors", "Normals"). Only features in this set will be added.</param>
-    /// <param name="availableFloat32Features">Set of Float32 feature names that should be included (e.g., "Intensity", scalar names). Only features in this set will be added.</param>
-    /// <param name="availableInt32Features">Set of Int32 feature names that should be included (e.g., "Id"). Only features in this set will be added.</param>
+    /// <param name="availableVector4Features">Set of Vector4 feature names (e.g., "Point_Position", "Point_Color", "Point_Normal").</param>
+    /// <param name="availableFloat32Features">Set of Float32 feature names (e.g., "Point_Intensity", custom "Point_*" scalars).</param>
+    /// <param name="availableInt32Features">Set of Int32 feature names (e.g., "Point_Id", "Point_Level", "Point_NodeID").</param>
     public static SectorData FromPointData(
-        int sectorIndex, 
-        int byteOffsetVector4, 
-        int byteOffsetFloat, 
+        int sectorIndex,
+        int byteOffsetVector4,
+        int byteOffsetFloat,
         int byteOffsetInt32,
-        string nodeId, 
-        int level, 
+        string nodeId,
+        int nodeIntId,
+        int level,
         PointData[] points,
         ISet<string> availableVector4Features,
         ISet<string> availableFloat32Features,
@@ -241,58 +252,51 @@ public class SectorData
             ByteOffsetInt32 = byteOffsetInt32
         };
 
-        // Create arrays only for available Vector4 features
-        foreach (var vectorName in availableVector4Features)
-        {
-            result._vectorFeatures[vectorName] = new Vector4[points.Length];
-        }
+        // Allocate per-feature arrays
+        foreach (var name in availableVector4Features)
+            result._vectorFeatures[name] = new Vector4[points.Length];
 
-        // Create arrays only for available scalar features
-        foreach (var scalarName in availableFloat32Features)
-        {
-            result._scalarFeatures[scalarName] = new float[points.Length];
-        }
+        foreach (var name in availableFloat32Features)
+            result._scalarFeatures[name] = new float[points.Length];
 
-        // Create arrays only for available integer features
-        foreach (var intName in availableInt32Features)
-        {
-            result._integerFeatures[intName] = new int[points.Length];
-        }
+        foreach (var name in availableInt32Features)
+            result._integerFeatures[name] = new int[points.Length];
 
-        // Convert point data
+        // Point_NodeID is constant for every point in a sector — fill it upfront.
+        if (result._integerFeatures.TryGetValue("Point_NodeID", out var nodeIdArr))
+            Array.Fill(nodeIdArr, nodeIntId);
+
+        // Convert per-point data
         for (int i = 0; i < points.Length; i++)
         {
             var pt = points[i];
-            
-            if (result._vectorFeatures.TryGetValue("Position", out var posArr))
-                posArr[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
-            
-            if (result._vectorFeatures.TryGetValue("Colors", out var colArr))
-                colArr[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
-            
-            if (result._vectorFeatures.TryGetValue("Normals", out var normArr))
-                normArr[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
-            
-            if (result._scalarFeatures.TryGetValue("Intensity", out var intArr))
-                intArr[i] = pt.Intensity;
 
-            // Copy Id to integer features
-            if (result._integerFeatures.TryGetValue("Id", out var idArr))
+            if (result._vectorFeatures.TryGetValue("Point_Position", out var posArr))
+                posArr[i] = new Vector4(pt.Position.X, pt.Position.Y, pt.Position.Z, 1f);
+
+            if (result._vectorFeatures.TryGetValue("Point_Color", out var colArr))
+                colArr[i] = new Vector4(pt.Color.R, pt.Color.G, pt.Color.B, pt.Color.A);
+
+            if (result._vectorFeatures.TryGetValue("Point_Normal", out var normArr))
+                normArr[i] = new Vector4(pt.Normal.X, pt.Normal.Y, pt.Normal.Z, 0f);
+
+            if (result._scalarFeatures.TryGetValue("Point_Intensity", out var intensityArr))
+                intensityArr[i] = pt.Intensity;
+
+            if (result._integerFeatures.TryGetValue("Point_Id", out var idArr))
                 idArr[i] = pt.Id;
 
-            // Copy Level to integer features (same for all points in the node)
-            if (result._integerFeatures.TryGetValue("Level", out var levelArr))
+            if (result._integerFeatures.TryGetValue("Point_Level", out var levelArr))
                 levelArr[i] = level;
 
-            // Copy scalars from PointData
+            // Custom PLY scalars — stored lowercase in PointData.Scalars,
+            // registered as "Point_{name}" in the feature dictionaries.
             if (pt.Scalars != null)
             {
                 foreach (var kvp in pt.Scalars)
                 {
-                    if (result._scalarFeatures.TryGetValue(kvp.Key, out var arr))
-                    {
-                        arr[i] = kvp.Value;
-                    }
+                    if (result._scalarFeatures.TryGetValue("Point_" + kvp.Key, out var scalarArr))
+                        scalarArr[i] = kvp.Value;
                 }
             }
         }

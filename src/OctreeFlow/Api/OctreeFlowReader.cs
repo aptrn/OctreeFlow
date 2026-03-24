@@ -148,38 +148,119 @@ public class OctreeFlowReader : IDisposable
     public IReadOnlyList<PlyProperty> PlyProperties => _plyIndex?.Properties ?? Array.Empty<PlyProperty>().ToList();
 
     /// <summary>
-    /// Sequence of Vector4 feature names mapped to typed arrays for buffer initialization.
-    /// Keys: "Position", "Colors", "Normals".
-    /// Values: Vector4[] arrays sized to buffer capacity.
+    /// Point Vector4 feature names mapped to typed arrays for buffer initialization.
+    /// Keys follow the Point_ prefix convention: "Point_Position", "Point_Color", "Point_Normal".
+    /// Values: Vector4[] arrays sized to buffer capacity (maxBufferSizeMB).
     /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
     /// </summary>
-    public IEnumerable<KeyValuePair<string, Vector4[]>> FeaturesVector4 => 
+    public IEnumerable<KeyValuePair<string, Vector4[]>> PointFeaturesVector4 =>
         _featuresVector4 ?? Enumerable.Empty<KeyValuePair<string, Vector4[]>>();
 
     /// <summary>
-    /// Sequence of Float32 feature names mapped to typed arrays for buffer initialization.
-    /// Keys: "Intensity" and any scalar dimension names.
+    /// Point Float32 feature names mapped to typed arrays for buffer initialization.
+    /// Keys follow the Point_ prefix convention: "Point_Intensity", "Point_{scalarName}", …
     /// Values: float[] arrays sized to buffer capacity.
     /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
     /// </summary>
-    public IEnumerable<KeyValuePair<string, float[]>> FeaturesFloat32 => 
+    public IEnumerable<KeyValuePair<string, float[]>> PointFeaturesFloat32 =>
         _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>();
 
     /// <summary>
-    /// Sequence of Int32 feature names mapped to typed arrays for buffer initialization.
-    /// Keys: "Id" (unique point identifier).
+    /// Point Int32 feature names mapped to typed arrays for buffer initialization.
+    /// Keys follow the Point_ prefix convention:
+    ///   "Point_Id"     — original PLY vertex index.
+    ///   "Point_Level"  — octree depth level.
+    ///   "Point_NodeID" — NodeId of the owning node (cross-reference index into BF buffers).
     /// Values: int[] arrays sized to buffer capacity.
     /// Use this to create your DynamicBufferAdvanced instances in a ForEach.
     /// </summary>
-    public IEnumerable<KeyValuePair<string, int[]>> FeaturesInt32 => 
+    public IEnumerable<KeyValuePair<string, int[]>> PointFeaturesInt32 =>
         _featuresInt32 ?? Enumerable.Empty<KeyValuePair<string, int[]>>();
 
     /// <summary>
-    /// Total buffer size in bytes for Int32 buffers (Id).
-    /// Use this to create your DynamicBufferAdvanced&lt;int&gt; with the correct size.
+    /// Total buffer size in bytes for Point Int32 buffers.
     /// (1/4 the size of Vector4 buffers since int is 4 bytes vs 16 bytes).
     /// </summary>
     public long BufferSizeBytesInt32 => (long)_maxBufferSizeMB * 1024 * 1024 / 4;
+
+    /// <summary>
+    /// Returns a flat registry of every feature across all three buffer classes.
+    /// Key   = feature name (e.g., "Point_Position", "BF_Level", "Vertex_NodeID").
+    /// Value = (BufferClass, DataType) where:
+    ///   BufferClass ∈ { "Point", "BF", "Vertex" }
+    ///   DataType    ∈ { "Vector", "Float", "Int" }
+    ///
+    /// Point features are dynamic (depend on the PLY file).
+    /// BF and Vertex features are fixed and always present after Initialize().
+    ///
+    /// Use this in VL to drive a single ForEach that dispatches to the right buffer
+    /// based on the two tag strings, instead of maintaining three separate loops.
+    /// </summary>
+    public IReadOnlyDictionary<string, (string BufferClass, string DataType)> GetFeatures()
+    {
+        EnsureInitialized();
+
+        var dict = new Dictionary<string, (string, string)>();
+
+        // ── Point features (dynamic — depend on PLY content) ─────────────────
+        foreach (var kvp in _featuresVector4 ?? Enumerable.Empty<KeyValuePair<string, Vector4[]>>())
+            dict[kvp.Key] = ("Point", "Vector");
+
+        foreach (var kvp in _featuresFloat32 ?? Enumerable.Empty<KeyValuePair<string, float[]>>())
+            dict[kvp.Key] = ("Point", "Float");
+
+        foreach (var kvp in _featuresInt32 ?? Enumerable.Empty<KeyValuePair<string, int[]>>())
+            dict[kvp.Key] = ("Point", "Int");
+
+        // ── BF (per-node) features (fixed set — enumerate from empty instance) 
+        var bf = new NodeBufferData(0);
+        foreach (var kvp in bf.FeaturesVector4) dict[kvp.Key] = ("BF", "Vector");
+        foreach (var kvp in bf.FeaturesFloat32) dict[kvp.Key] = ("BF", "Float");
+        foreach (var kvp in bf.FeaturesInt32)   dict[kvp.Key] = ("BF", "Int");
+
+        // ── Vertex features (fixed set — enumerate from empty instance) ───────
+        var vx = new VertexBufferData(0);
+        foreach (var kvp in vx.FeaturesVector4) dict[kvp.Key] = ("Vertex", "Vector");
+        foreach (var kvp in vx.FeaturesFloat32) dict[kvp.Key] = ("Vertex", "Float");
+        foreach (var kvp in vx.FeaturesInt32)   dict[kvp.Key] = ("Vertex", "Int");
+
+        return dict;
+    }
+
+    // ── BF (per-node) buffer sizing ───────────────────────────────────────────
+
+    /// <summary>
+    /// Total bytes required for a per-node Vector4 structured buffer (e.g., BF_Position, BF_Size, BF_Color).
+    /// Use this when creating a StructuredBuffer&lt;float4&gt; of size TotalNodes in VL.Fuse.
+    /// </summary>
+    public long BFBufferSizeBytesVector4 => (long)TotalNodes * 16;
+
+    /// <summary>
+    /// Total bytes required for a per-node Float32 structured buffer (e.g., BF_Density, BF_Spacing).
+    /// </summary>
+    public long BFBufferSizeBytesFloat32 => (long)TotalNodes * 4;
+
+    /// <summary>
+    /// Total bytes required for a per-node Int32 structured buffer (e.g., BF_NodeID, BF_Level, BF_View).
+    /// </summary>
+    public long BFBufferSizeBytesInt32 => (long)TotalNodes * 4;
+
+    // ── Vertex (per node-corner) buffer sizing ────────────────────────────────
+
+    /// <summary>
+    /// Total number of octree box vertices = TotalNodes × 8.
+    /// </summary>
+    public int TotalVertices => TotalNodes * 8;
+
+    /// <summary>
+    /// Total bytes required for a per-vertex Vector4 structured buffer (e.g., Vertex_Position).
+    /// </summary>
+    public long VertexBufferSizeBytesVector4 => (long)TotalVertices * 16;
+
+    /// <summary>
+    /// Total bytes required for a per-vertex Int32 structured buffer (e.g., Vertex_NodeID, Vertex_Index, Vertex_Level, Vertex_ID).
+    /// </summary>
+    public long VertexBufferSizeBytesInt32 => (long)TotalVertices * 4;
 
     /// <summary>
     /// Checks if a Vector4 feature exists (Position, Colors, Normals).
@@ -203,23 +284,23 @@ public class OctreeFlowReader : IDisposable
     public bool HasFeatureInt32(string name) => _featuresInt32?.ContainsKey(name) ?? false;
 
     /// <summary>
-    /// Checks if a scalar feature exists by name.
-    /// This checks the Float32 features excluding Intensity.
+    /// Checks if a custom PLY scalar feature exists by full Point_-prefixed name.
+    /// Standard features (Point_Intensity) are excluded.
     /// </summary>
-    /// <param name="name">Scalar property name from the PLY file.</param>
+    /// <param name="name">Full feature name, e.g. "Point_classification".</param>
     /// <returns>True if the scalar feature is available.</returns>
     public bool HasScalarFeature(string name)
     {
         if (_featuresFloat32 == null) return false;
-        // Check if it exists and is not "Intensity" (which is a standard feature)
-        return name != "Intensity" && _featuresFloat32.ContainsKey(name);
+        return name != "Point_Intensity" && _featuresFloat32.ContainsKey(name);
     }
 
     /// <summary>
-    /// Gets the names of all available scalar features (excluding standard features like Intensity).
+    /// Names of all custom PLY scalar features (Float32, excluding Point_Intensity).
+    /// All names carry the "Point_" prefix (e.g., "Point_classification").
     /// </summary>
-    public IEnumerable<string> ScalarFeatureNames => 
-        _featuresFloat32?.Keys.Where(k => k != "Intensity") ?? Enumerable.Empty<string>();
+    public IEnumerable<string> ScalarFeatureNames =>
+        _featuresFloat32?.Keys.Where(k => k != "Point_Intensity") ?? Enumerable.Empty<string>();
 
     /// <summary>
     /// Gets the buffer array for a specific Vector4 feature.
@@ -368,7 +449,9 @@ public class OctreeFlowReader : IDisposable
 
     /// <summary>
     /// Builds the feature info dictionaries from PLY properties.
-    /// Populates FeaturesVector4, FeaturesFloat32, and FeaturesInt32 with correctly-sized arrays for buffer initialization.
+    /// All keys use the Point_ prefix (e.g., "Point_Position", "Point_Color").
+    /// Populates FeaturesVector4, FeaturesFloat32, and FeaturesInt32 with correctly-sized arrays
+    /// for buffer initialization and DynamicBufferAdvanced creation in VL.
     /// </summary>
     /// <param name="bufferCapacity">Total buffer capacity in points (used to size the arrays).</param>
     private void BuildFeatureInfo(int bufferCapacity)
@@ -379,7 +462,6 @@ public class OctreeFlowReader : IDisposable
 
         if (_plyIndex == null) return;
 
-        // Standard Vector4 features (always present if PLY has x,y,z)
         bool hasPosition = false;
         bool hasColors = false;
         bool hasNormals = false;
@@ -389,58 +471,142 @@ public class OctreeFlowReader : IDisposable
         {
             var name = prop.Name.ToLower();
 
-            // Check for position components
             if (name == "x" || name == "y" || name == "z")
-            {
                 hasPosition = true;
-            }
-            // Check for color components
-            else if (name == "red" || name == "r" || name == "green" || name == "g" || 
+            else if (name == "red" || name == "r" || name == "green" || name == "g" ||
                      name == "blue" || name == "b" || name == "alpha" || name == "a")
-            {
                 hasColors = true;
-            }
-            // Check for normal components
             else if (name == "nx" || name == "ny" || name == "nz")
-            {
                 hasNormals = true;
-            }
-            // Check for intensity
             else if (name == "intensity" || name == "scalar_intensity")
-            {
                 hasIntensity = true;
-            }
-            // Everything else is a scalar
             else
             {
-                // Add as scalar feature with correctly-sized float array
-                _featuresFloat32[prop.Name] = new float[bufferCapacity];
+                // Custom PLY scalar → "Point_{lowercaseName}"
+                // ConvertToPointData stores scalars with the lowercase name, so we match here.
+                _featuresFloat32["Point_" + name] = new float[bufferCapacity];
             }
         }
 
-        // Add standard features based on what was found (with correctly-sized arrays)
-        if (hasPosition)
+        // Standard Vector4 point features
+        if (hasPosition)  _featuresVector4["Point_Position"] = new Vector4[bufferCapacity];
+        if (hasColors)    _featuresVector4["Point_Color"]    = new Vector4[bufferCapacity];
+        if (hasNormals)   _featuresVector4["Point_Normal"]   = new Vector4[bufferCapacity];
+
+        // Standard Float32 point features
+        if (hasIntensity) _featuresFloat32["Point_Intensity"] = new float[bufferCapacity];
+
+        // Standard Int32 point features
+        _featuresInt32["Point_Id"]     = new int[bufferCapacity];
+        _featuresInt32["Point_Level"]  = new int[bufferCapacity];
+
+        // Cross-buffer index: for each active point, the NodeId of its owning node.
+        // Shaders use this to look up BF (per-node) buffer values:
+        //   float density = BF_Density[Point_NodeID[pointId]];
+        _featuresInt32["Point_NodeID"] = new int[bufferCapacity];
+    }
+
+    // ── Static buffer builders (call after Initialize) ────────────────────────
+
+    /// <summary>
+    /// Builds the static per-node (BF) buffer data. Call once after Initialize().
+    /// Returns one entry per octree node, indexed by NodeId (DFS sequential, 0 = root).
+    ///
+    /// The result is the CPU-side data you should upload to your per-node structured buffers
+    /// in VL.Fuse (BF_Position, BF_Size, BF_Color, BF_Density, BF_Spacing, BF_NodeID,
+    /// BF_PointCount, BF_Level, BF_View).
+    ///
+    /// BF_View is initialised to 0; call UpdateNodeViewState() every frame to refresh it.
+    /// </summary>
+    public NodeBufferData BuildStaticNodeData()
+    {
+        EnsureInitialized();
+
+        var nodes = _nodeInfoCache.Values.OrderBy(n => n.NodeId).ToArray();
+        int count = nodes.Length;
+
+        var data = new NodeBufferData(count);
+
+        for (int i = 0; i < count; i++)
         {
-            _featuresVector4["Position"] = new Vector4[bufferCapacity];
-        }
-        if (hasColors)
-        {
-            _featuresVector4["Colors"] = new Vector4[bufferCapacity];
-        }
-        if (hasNormals)
-        {
-            _featuresVector4["Normals"] = new Vector4[bufferCapacity];
-        }
-        if (hasIntensity)
-        {
-            _featuresFloat32["Intensity"] = new float[bufferCapacity];
+            var node = nodes[i];
+            data.BF_NodeID[i]      = node.NodeId; // identity: always equals i
+            data.BF_Position[i]    = new Vector4(node.Center.X, node.Center.Y, node.Center.Z, 1f);
+            data.BF_Size[i]        = new Vector4(node.Size.X, node.Size.Y, node.Size.Z, node.Spacing);
+            var c = node.AverageColor;
+            data.BF_Color[i]       = new Vector4(c.R, c.G, c.B, c.A);
+            data.BF_Density[i]     = node.PointDensity;
+            data.BF_Spacing[i]     = node.Spacing;
+            data.BF_PointCount[i]  = node.PointCount;
+            data.BF_Level[i]       = node.Level;
+            // BF_View initialised to 0 by NodeBufferData constructor
         }
 
-        // Always add Id as an integer feature - each point gets a unique ID
-        _featuresInt32["Id"] = new int[bufferCapacity];
+        return data;
+    }
 
-        // Always add Level as an integer feature - the octree level at which the point is assigned
-        _featuresInt32["Level"] = new int[bufferCapacity];
+    /// <summary>
+    /// Builds the static per-vertex buffer data for all octree bounding-box corners.
+    /// Call once after Initialize(). Returns TotalNodes × 8 entries.
+    ///
+    /// Layout: vertices are stored 8 consecutive entries per node in NodeId order.
+    ///   vertex i → node (i / 8), corner (i % 8).
+    ///
+    /// Upload the arrays to your per-vertex structured buffers in VL.Fuse
+    /// (Vertex_NodeID, Vertex_Position, Vertex_Index, Vertex_Level, Vertex_ID).
+    /// </summary>
+    public VertexBufferData BuildStaticVertexData()
+    {
+        EnsureInitialized();
+
+        var nodes = _nodeInfoCache.Values.OrderBy(n => n.NodeId).ToArray();
+        int nodeCount   = nodes.Length;
+        int vertexCount = nodeCount * 8;
+
+        var data = new VertexBufferData(vertexCount);
+
+        for (int n = 0; n < nodeCount; n++)
+        {
+            var node = nodes[n];
+            var bb = node.BoundingBox;
+            float minX = bb.Minimum.X, minY = bb.Minimum.Y, minZ = bb.Minimum.Z;
+            float maxX = bb.Maximum.X, maxY = bb.Maximum.Y, maxZ = bb.Maximum.Z;
+
+            for (int c = 0; c < 8; c++)
+            {
+                int vi = n * 8 + c;
+                data.Vertex_NodeID[vi]   = node.NodeId;
+                data.Vertex_Position[vi] = new Vector4(
+                    (c & 1) != 0 ? maxX : minX,
+                    (c & 2) != 0 ? maxY : minY,
+                    (c & 4) != 0 ? maxZ : minZ,
+                    1f);
+                data.Vertex_Index[vi]    = c;
+                data.Vertex_Level[vi]    = node.Level;
+                data.Vertex_ID[vi]       = vi;
+            }
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Updates the BF_View array in an existing NodeBufferData to reflect the current traversal.
+    /// Call this every frame after Traverse() / UpdateFrame() to keep BF_View in sync.
+    ///
+    /// Sets BF_View[NodeId] = 1 for every node in viewingNodes, 0 for all others.
+    /// Re-upload nodeData.BF_View to your GPU buffer after calling this.
+    /// </summary>
+    /// <param name="viewingNodes">Nodes currently selected for display (TraversalResult.ViewingNodes).</param>
+    /// <param name="nodeData">The NodeBufferData previously returned by BuildStaticNodeData().</param>
+    public void UpdateNodeViewState(IEnumerable<NodeInfo> viewingNodes, NodeBufferData nodeData)
+    {
+        Array.Clear(nodeData.BF_View, 0, nodeData.NodeCount);
+        foreach (var node in viewingNodes)
+        {
+            if ((uint)node.NodeId < (uint)nodeData.NodeCount)
+                nodeData.BF_View[node.NodeId] = 1;
+        }
     }
 
     /// <summary>

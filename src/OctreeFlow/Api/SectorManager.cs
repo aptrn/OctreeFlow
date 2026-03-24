@@ -286,13 +286,15 @@ public class SectorManager : IDisposable
             int byteOffsetFloat = _currentOffset * 4;    // 4 bytes per float
             int byteOffsetInt32 = _currentOffset * 4;    // 4 bytes per int
 
-            // Create sector data
+            // Create sector data — node.NodeId is the integer DFS index used by Point_NodeID
+            // so shaders can cross-reference BF buffers: BF_Density[Point_NodeID[pointId]].
             var sectorData = SectorData.FromPointData(
                 _activeNodes.Count, // Use node index as "sector index"
                 byteOffsetVector4,
                 byteOffsetFloat,
                 byteOffsetInt32,
                 node.Id,
+                node.NodeId,
                 node.Level,
                 pointData,
                 _availableVector4Features,
