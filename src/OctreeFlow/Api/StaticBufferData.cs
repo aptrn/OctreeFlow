@@ -157,6 +157,7 @@ public class VertexBufferData
         _int32["Vertex_Index"]  = new int[vertexCount];
         _int32["Vertex_Level"]  = new int[vertexCount];
         _int32["Vertex_ID"]     = new int[vertexCount];
+        _int32["Vertex_View"]   = new int[vertexCount];
     }
 
     // ── Dictionary-style access ───────────────────────────────────────────────
@@ -178,7 +179,7 @@ public class VertexBufferData
     /// <summary>
     /// Per-vertex Int32 features keyed by name.
     /// Keys: "Vertex_NodeID" (cross-reference index into BF buffers),
-    ///       "Vertex_Index" (0–7 corner), "Vertex_Level", "Vertex_ID".
+        ///       "Vertex_Index" (0–7 corner), "Vertex_Level", "Vertex_ID", "Vertex_View".
     /// Values: int[] arrays of length VertexCount.
     /// </summary>
     public IEnumerable<KeyValuePair<string, int[]>> FeaturesInt32 => _int32;
@@ -197,6 +198,13 @@ public class VertexBufferData
     /// <summary>Octree depth level of the owning node (0 = root).</summary>
     public int[]     Vertex_Level    => _int32["Vertex_Level"];
 
-    /// <summary>This vertex's own sequential index in the buffer (0…VertexCount−1).</summary>
-    public int[]     Vertex_ID       => _int32["Vertex_ID"];
+        /// <summary>This vertex's own sequential index in the buffer (0…VertexCount−1).</summary>
+        public int[]     Vertex_ID       => _int32["Vertex_ID"];
+
+        /// <summary>
+        /// Per-frame visibility flag: 0 = owning node not in view, 1 = actively rendered.
+        /// Fill manually after each traversal (e.g., set all 8 vertices of a node to the
+        /// same value as BF_View[Vertex_NodeID[i]]). Re-upload only this buffer each frame.
+        /// </summary>
+        public int[]     Vertex_View     => _int32["Vertex_View"];
 }
