@@ -3,24 +3,24 @@ using Stride.Core.Mathematics;
 namespace OctreeFlow.Api;
 
 /// <summary>
-/// Static per-node (BF = Box/node Features) buffer data. Length = TotalNodes.
+/// Static per-node (BF = Box/node Features) buffer data.
 /// Built once after Initialize() via OctreeFlowReader.BuildStaticNodeData().
-/// Each entry is indexed by NodeId (DFS sequential integer, 0 = root).
+///
+/// LAYOUT — vertex granularity (NodeCount × 8 entries):
+///   Each node n occupies 8 consecutive slots: indices n*8 … n*8+7.
+///   At buffer index i: all BF values describe the owning node (i / 8).
+///   This matches VertexBufferData exactly, so both buffers can share the same
+///   dispatch index in VL.Fuse without any shader-side indirection.
+///
+///     BF_Position[i]  = center of node (i/8)
+///     Vertex_Position[i] = corner (i%8) of node (i/8)   ← from VertexBufferData
 ///
 /// Naming schema: BF_DataName
 ///
-/// Iterate FeaturesVector4 / FeaturesFloat32 / FeaturesInt32 exactly like
-/// OctreeFlowReader.FeaturesVector4/Float32/Int32 to create your structured buffers
-/// in a single ForEach loop.
-///
-/// Cross-buffer synchronization in GPU shaders:
-///   A noise or filter computed per-node (indexed by NodeId) can be applied to both
-///   vertex and point buffers via their respective index buffers:
-///     float noise = PerNodeBuffer[Point_NodeID[pointId]];
-///     float noise = PerNodeBuffer[Vertex_NodeID[vertexId]];
-///
 /// BF_View is the only dynamic field — update it each frame via
 /// OctreeFlowReader.UpdateNodeViewState(), then re-upload only the BF_View buffer.
+/// BF_View[i] = 1 only for i = n*8+0 of in-view nodes, so a single-instance-per-node
+/// box render can be driven by the BF_View flag without extra shader logic.
 /// </summary>
 public class NodeBufferData
 {
@@ -28,60 +28,84 @@ public class NodeBufferData
     private readonly Dictionary<string, float[]>   _float32 = new();
     private readonly Dictionary<string, int[]>     _int32   = new();
 
-    /// <summary>Number of nodes (= TotalNodes).</summary>
+    /// <summary>Number of octree nodes.</summary>
     public int NodeCount { get; }
 
-        public NodeBufferData(int nodeCount)
+    /// <summary>
+    /// Number of slots in every feature array = NodeCount × 8.
+    /// Use this as the GPU dispatch count so BF and Vertex buffers are index-aligned.
+    /// </summary>
+    public int VertexCount { get; }
+
+    /// <summary>
+    /// Total allocated size of all feature arrays.
+    /// Equals VertexCount when no maximumSize was specified, otherwise equals the
+    /// requested maximumSize (clamped to at least VertexCount).
+    /// Slots [VertexCount..MaximumSize-1] are zero-padded.
+    /// </summary>
+    public int MaximumSize { get; }
+
+    /// <param name="nodeCount">Actual number of octree nodes.</param>
+    /// <param name="maximumSize">
+    /// Desired GPU buffer size. When &gt; 0, arrays are allocated at this length
+    /// (must be &gt;= nodeCount × 8). Pass the same value to BuildStaticVertexData
+    /// so both BF and Vertex buffers share identical element counts.
+    /// Defaults to nodeCount × 8 when 0.
+    /// </param>
+    public NodeBufferData(int nodeCount, int maximumSize = 0)
     {
-        NodeCount = nodeCount;
+        NodeCount   = nodeCount;
+        VertexCount = nodeCount * 8;
+        MaximumSize = maximumSize > 0 ? Math.Max(VertexCount, maximumSize) : VertexCount;
 
         // Vector4 features
-        _vector4["BF_Position"] = new Vector4[nodeCount];
-        _vector4["BF_Size"]     = new Vector4[nodeCount];
-        _vector4["BF_Color"]    = new Vector4[nodeCount];
+        _vector4["BF_Position"] = new Vector4[MaximumSize];
+        _vector4["BF_Size"]     = new Vector4[MaximumSize];
+        _vector4["BF_Color"]    = new Vector4[MaximumSize];
 
         // Float32 features
-        _float32["BF_Density"] = new float[nodeCount];
-        _float32["BF_Spacing"] = new float[nodeCount];
+        _float32["BF_Density"] = new float[MaximumSize];
+        _float32["BF_Spacing"] = new float[MaximumSize];
 
-        // Int32 features (BF_NodeID first — it is a Buffer Index, listed first by convention)
-        _int32["BF_NodeID"]    = new int[nodeCount];
-        _int32["BF_PointCount"] = new int[nodeCount];
-        _int32["BF_Level"]     = new int[nodeCount];
-        _int32["BF_View"]      = new int[nodeCount];
+        // Int32 features (BF_NodeID first — it is the owning node index)
+        _int32["BF_NodeID"]     = new int[MaximumSize];
+        _int32["BF_PointCount"] = new int[MaximumSize];
+        _int32["BF_Level"]      = new int[MaximumSize];
+        _int32["BF_View"]       = new int[MaximumSize];
     }
 
     // ── Dictionary-style access ───────────────────────────────────────────────
-    // Same pattern as OctreeFlowReader.FeaturesVector4/Float32/Int32.
-    // Loop over these in VL to create one structured buffer per entry.
 
     /// <summary>
-    /// Per-node Vector4 features keyed by name.
+    /// BF Vector4 features keyed by name.
     /// Keys: "BF_Position", "BF_Size", "BF_Color".
-    /// Values: Vector4[] arrays of length NodeCount.
+    /// Values: Vector4[] arrays of length MaximumSize, filled at vertex granularity.
     /// </summary>
     public IEnumerable<KeyValuePair<string, Vector4[]>> FeaturesVector4 => _vector4;
 
     /// <summary>
-    /// Per-node Float32 features keyed by name.
+    /// BF Float32 features keyed by name.
     /// Keys: "BF_Density", "BF_Spacing".
-    /// Values: float[] arrays of length NodeCount.
+    /// Values: float[] arrays of length MaximumSize, filled at vertex granularity.
     /// </summary>
     public IEnumerable<KeyValuePair<string, float[]>> FeaturesFloat32 => _float32;
 
     /// <summary>
-    /// Per-node Int32 features keyed by name.
-    /// Keys: "BF_NodeID" (identity/index), "BF_PointCount", "BF_Level", "BF_View".
-    /// Values: int[] arrays of length NodeCount.
+    /// BF Int32 features keyed by name.
+    /// Keys: "BF_NodeID", "BF_PointCount", "BF_Level", "BF_View".
+    /// Values: int[] arrays of length MaximumSize, filled at vertex granularity.
     /// </summary>
     public IEnumerable<KeyValuePair<string, int[]>> FeaturesInt32 => _int32;
 
     // ── Typed convenience accessors ───────────────────────────────────────────
 
-    /// <summary>Identity index: BF_NodeID[i] == i. Use as structured-buffer self-index in shaders.</summary>
+    /// <summary>
+    /// Owning node index: BF_NodeID[i] == i / 8.
+    /// At vertex slot i this gives the NodeId of the node whose bounding-box corner is at that slot.
+    /// </summary>
     public int[]     BF_NodeID    => _int32["BF_NodeID"];
 
-    /// <summary>Node center in world space. XYZ = center, W = 1.</summary>
+    /// <summary>Owning node center in world space. XYZ = center, W = 1. Same value for all 8 slots of a node.</summary>
     public Vector4[] BF_Position  => _vector4["BF_Position"];
 
     /// <summary>Node bounding box extent. XYZ = size (max−min), W = spacing (largest dimension).</summary>
@@ -105,6 +129,8 @@ public class NodeBufferData
     /// <summary>
     /// Per-frame visibility flag: 0 = not in view, 1 = actively rendered.
     /// Updated by OctreeFlowReader.UpdateNodeViewState(). Re-upload after each call.
+    /// Only the first slot of each node (i = n*8+0) is set to 1; the other 7 slots remain 0.
+    /// This ensures a box shader dispatching on VertexCount renders exactly one box per node.
     /// </summary>
     public int[]     BF_View      => _int32["BF_View"];
 }
@@ -116,9 +142,6 @@ public class NodeBufferData
 ///
 /// Naming schema: Vertex_DataName
 ///
-/// Iterate FeaturesVector4 / FeaturesInt32 exactly like the point features to create
-/// your structured buffers in a single ForEach loop.
-///
 /// Layout: 8 consecutive vertices per node, in NodeId order.
 ///   vertex i → node (i / 8), corner (i % 8)
 ///
@@ -127,11 +150,10 @@ public class NodeBufferData
 ///   bit 1 → Y axis
 ///   bit 2 → Z axis
 ///
-/// Cross-buffer synchronization:
-///   Vertex_NodeID lets you look up any BF (per-node) buffer value for a vertex:
-///     int   nodeIdx = Vertex_NodeID[vertexId];
-///     float density = BF_Density_buffer[nodeIdx];
-///     int   inView  = BF_View_buffer[nodeIdx];
+/// Index alignment: NodeBufferData is also laid out at vertex granularity (8 slots per node),
+/// so BF and Vertex buffers share the same dispatch index without any shader-side indirection:
+///   BF_Position[i]     = center of owning node (i/8)
+///   Vertex_Position[i] = bounding-box corner (i%8) of owning node (i/8)
 /// </summary>
 public class VertexBufferData
 {
@@ -142,23 +164,37 @@ public class VertexBufferData
     /// <summary>Total number of vertices = TotalNodes × 8.</summary>
     public int VertexCount { get; }
 
-        public VertexBufferData(int vertexCount)
+    /// <summary>
+    /// Total allocated size of all feature arrays.
+    /// Equals VertexCount when no maximumSize was specified, otherwise equals the requested maximumSize.
+    /// Slots [VertexCount..MaximumSize-1] are zero-padded.
+    /// </summary>
+    public int MaximumSize { get; }
+
+    /// <param name="vertexCount">Actual number of vertices (= TotalNodes × 8).</param>
+    /// <param name="maximumSize">
+    /// Desired GPU buffer size. When &gt; 0, all arrays are allocated at this length
+    /// so every buffer in the synchronized set shares the same element count.
+    /// Must be &gt;= vertexCount. Defaults to vertexCount when 0.
+    /// </param>
+    public VertexBufferData(int vertexCount, int maximumSize = 0)
     {
         VertexCount = vertexCount;
+        MaximumSize = maximumSize > 0 ? Math.Max(vertexCount, maximumSize) : vertexCount;
 
         // Vector4 features
-        _vector4["Vertex_Position"] = new Vector4[vertexCount];
+        _vector4["Vertex_Position"] = new Vector4[MaximumSize];
 
         // Float32 features — empty for now, reserved for future per-vertex scalar data
-        // (no entries added here yet)
 
         // Int32 features (Vertex_NodeID first — it is the Buffer Index)
-        _int32["Vertex_NodeID"] = new int[vertexCount];
-        _int32["Vertex_Index"]  = new int[vertexCount];
-        _int32["Vertex_Level"]  = new int[vertexCount];
-        _int32["Vertex_ID"]     = new int[vertexCount];
-        _int32["Vertex_View"]   = new int[vertexCount];
+        _int32["Vertex_NodeID"] = new int[MaximumSize];
+        _int32["Vertex_Index"]  = new int[MaximumSize];
+        _int32["Vertex_Level"]  = new int[MaximumSize];
+        _int32["Vertex_ID"]     = new int[MaximumSize];
+        _int32["Vertex_View"]   = new int[MaximumSize];
     }
+
 
     // ── Dictionary-style access ───────────────────────────────────────────────
 

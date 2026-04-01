@@ -864,12 +864,12 @@ class Program
 
             // Display available features
             Console.WriteLine("Available features (Vector4):");
-            foreach (var feature in reader.FeaturesVector4)
+            foreach (var feature in reader.PointFeaturesVector4)
             {
                 Console.WriteLine($"  {feature.Key}");
             }
             Console.WriteLine("Available features (Float32):");
-            foreach (var feature in reader.FeaturesFloat32)
+            foreach (var feature in reader.PointFeaturesFloat32)
             {
                 Console.WriteLine($"  {feature.Key}");
             }

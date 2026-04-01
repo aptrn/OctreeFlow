@@ -601,6 +601,16 @@ public class BufferUpdateResult
     }
 
     /// <summary>
+    /// Gets combined buffer data from all NEW sectors, padded to <paramref name="maximumSize"/>.
+    /// See <see cref="GetCombinedNewData()"/> for details on the "new only" caveat.
+    /// Slots [TotalPointCount..maximumSize-1] are zero-padded.
+    /// </summary>
+    public CombinedBufferData GetCombinedNewData(int maximumSize)
+    {
+        return CombineAllSectorData(NewSectors, maximumSize);
+    }
+
+    /// <summary>
     /// Gets combined buffer data from ALL ACTIVE sectors (both new and previously loaded).
     /// Use this to get the complete buffer state for uploading at offset 0.
     /// This is what you should use for simple vvvv gamma setups where you upload
@@ -612,130 +622,94 @@ public class BufferUpdateResult
     }
 
     /// <summary>
-    /// Combines data from multiple sectors into contiguous arrays.
+    /// Gets combined buffer data from ALL ACTIVE sectors, with all arrays padded to
+    /// <paramref name="maximumSize"/> so every buffer in your VL.Fuse patch shares the same
+    /// element count and ShaderNode reads stay index-synchronized.
+    ///
+    /// Only Point_* features are written — BF_* and Vertex_* buffers are managed separately
+    /// via BuildStaticNodeData / BuildStaticVertexData and are never touched here.
+    ///
+    /// Slots [TotalPointCount..maximumSize-1] are zero-padded.
     /// </summary>
-    private static CombinedBufferData CombineAllSectorData(List<SectorData> sectors)
+    /// <param name="maximumSize">
+    /// Total number of elements in every output array.
+    /// Use the same value passed to BuildStaticNodeData / BuildStaticVertexData.
+    /// </param>
+    public CombinedBufferData GetCombinedAllActiveData(int maximumSize)
+    {
+        return CombineAllSectorData(AllActiveSectors, maximumSize);
+    }
+
+    /// <summary>
+    /// Combines data from multiple sectors into contiguous arrays.
+    /// Only Point_* features are written — BF_* and Vertex_* data are never included.
+    /// </summary>
+    private static CombinedBufferData CombineAllSectorData(
+        List<SectorData> sectors,
+        int maximumSize = 0)
     {
         var result = new CombinedBufferData();
-        
+
         if (sectors.Count == 0) return result;
 
-        // Calculate total points
         int totalPoints = sectors.Sum(s => s.PointCount);
         result.TotalPointCount = totalPoints;
 
         if (totalPoints == 0) return result;
 
-        // Collect all Vector4 feature names from all sectors
-        var vectorNames = new HashSet<string>();
-        foreach (var sector in sectors)
-        {
-            foreach (var name in sector.VectorFeatureNames)
-            {
-                vectorNames.Add(name);
-            }
-        }
+        int bufferSize = maximumSize > 0 ? Math.Max(totalPoints, maximumSize) : totalPoints;
 
-        // Collect all scalar feature names from all sectors
-        var scalarNames = new HashSet<string>();
-        foreach (var sector in sectors)
-        {
-            foreach (var name in sector.ScalarFeatureNames)
-            {
-                scalarNames.Add(name);
-            }
-        }
-
-        // Collect all integer feature names from all sectors
+        // Collect all feature names across sectors
+        var vectorNames  = new HashSet<string>();
+        var scalarNames  = new HashSet<string>();
         var integerNames = new HashSet<string>();
+
         foreach (var sector in sectors)
         {
-            foreach (var name in sector.IntegerFeatureNames)
-            {
-                integerNames.Add(name);
-            }
+            foreach (var name in sector.VectorFeatureNames)  vectorNames.Add(name);
+            foreach (var name in sector.ScalarFeatureNames)  scalarNames.Add(name);
+            foreach (var name in sector.IntegerFeatureNames) integerNames.Add(name);
         }
 
-        // Allocate combined Vector4 arrays
-        var vectorArrays = new Dictionary<string, Vector4[]>();
-        foreach (var name in vectorNames)
-        {
-            vectorArrays[name] = new Vector4[totalPoints];
-        }
-
-        // Allocate combined scalar arrays
-        var scalarArrays = new Dictionary<string, float[]>();
-        foreach (var name in scalarNames)
-        {
-            scalarArrays[name] = new float[totalPoints];
-        }
-
-        // Allocate combined integer arrays
+        // Allocate arrays at bufferSize (zero-padded beyond totalPoints)
+        var vectorArrays  = new Dictionary<string, Vector4[]>();
+        var scalarArrays  = new Dictionary<string, float[]>();
         var integerArrays = new Dictionary<string, int[]>();
-        foreach (var name in integerNames)
-        {
-            integerArrays[name] = new int[totalPoints];
-        }
 
-        // Copy data from each sector
+        foreach (var name in vectorNames)  vectorArrays[name]  = new Vector4[bufferSize];
+        foreach (var name in scalarNames)  scalarArrays[name]  = new float[bufferSize];
+        foreach (var name in integerNames) integerArrays[name] = new int[bufferSize];
+
+        // Copy sector data into the flat arrays
         int offset = 0;
         foreach (var sector in sectors)
         {
             int count = sector.PointCount;
 
-            // Copy Vector4 data
             foreach (var name in vectorNames)
             {
-                var sectorVector = sector.GetVectorData(name);
-                if (sectorVector != null)
-                {
-                    Array.Copy(sectorVector, 0, vectorArrays[name], offset, count);
-                }
-                // If sector doesn't have this vector, the array remains zeroed
+                var src = sector.GetVectorData(name);
+                if (src != null) Array.Copy(src, 0, vectorArrays[name], offset, count);
             }
 
-            // Copy scalar data
             foreach (var name in scalarNames)
             {
-                var sectorScalar = sector.GetScalarData(name);
-                if (sectorScalar != null)
-                {
-                    Array.Copy(sectorScalar, 0, scalarArrays[name], offset, count);
-                }
-                // If sector doesn't have this scalar, the array remains zeroed
+                var src = sector.GetScalarData(name);
+                if (src != null) Array.Copy(src, 0, scalarArrays[name], offset, count);
             }
 
-            // Copy integer data
             foreach (var name in integerNames)
             {
-                var sectorInteger = sector.GetIntegerData(name);
-                if (sectorInteger != null)
-                {
-                    Array.Copy(sectorInteger, 0, integerArrays[name], offset, count);
-                }
-                // If sector doesn't have this integer, the array remains zeroed
+                var src = sector.GetIntegerData(name);
+                if (src != null) Array.Copy(src, 0, integerArrays[name], offset, count);
             }
 
             offset += count;
         }
 
-        // Add Vector4 arrays to result
-        foreach (var kvp in vectorArrays)
-        {
-            result.SetVectorData(kvp.Key, kvp.Value);
-        }
-
-        // Add scalar arrays to result
-        foreach (var kvp in scalarArrays)
-        {
-            result.SetScalarData(kvp.Key, kvp.Value);
-        }
-
-        // Add integer arrays to result
-        foreach (var kvp in integerArrays)
-        {
-            result.SetIntegerData(kvp.Key, kvp.Value);
-        }
+        foreach (var kvp in vectorArrays)  result.SetVectorData(kvp.Key,  kvp.Value);
+        foreach (var kvp in scalarArrays)  result.SetScalarData(kvp.Key,  kvp.Value);
+        foreach (var kvp in integerArrays) result.SetIntegerData(kvp.Key, kvp.Value);
 
         return result;
     }
