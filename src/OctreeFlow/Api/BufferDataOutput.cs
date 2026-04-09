@@ -626,14 +626,14 @@ public class BufferUpdateResult
     /// <paramref name="maximumSize"/> so every buffer in your VL.Fuse patch shares the same
     /// element count and ShaderNode reads stay index-synchronized.
     ///
-    /// Only Point_* features are written — BF_* and Vertex_* buffers are managed separately
-    /// via BuildStaticNodeData / BuildStaticVertexData and are never touched here.
+    /// Only Point_* features are written — BF_* buffers are managed separately via
+    /// BuildStaticNodeData and are never touched here.
     ///
     /// Slots [TotalPointCount..maximumSize-1] are zero-padded.
     /// </summary>
     /// <param name="maximumSize">
     /// Total number of elements in every output array.
-    /// Use the same value passed to BuildStaticNodeData / BuildStaticVertexData.
+    /// Use the same value passed to BuildStaticNodeData.
     /// </param>
     public CombinedBufferData GetCombinedAllActiveData(int maximumSize)
     {
@@ -642,7 +642,7 @@ public class BufferUpdateResult
 
     /// <summary>
     /// Combines data from multiple sectors into contiguous arrays.
-    /// Only Point_* features are written — BF_* and Vertex_* data are never included.
+    /// Only Point_* features are written — BF_* data is never included.
     /// </summary>
     private static CombinedBufferData CombineAllSectorData(
         List<SectorData> sectors,

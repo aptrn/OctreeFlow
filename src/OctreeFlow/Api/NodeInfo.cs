@@ -100,7 +100,7 @@ public class NodeInfo
     /// <summary>
     /// Sequential integer identity assigned at load time (0 = root, DFS order).
     /// Stable across traversal passes — the same node always returns the same value.
-    /// Also used as the per-box identifier in <see cref="GetVertices"/>.
+    /// Indexes linear BF buffers from <see cref="OctreeFlowReader.BuildStaticNodeData"/> and matches <c>Point_NodeID</c>.
     /// </summary>
     public int NodeId { get; }
 
@@ -388,63 +388,6 @@ public class NodeInfo
         }
 
         return frustumStatus;
-    }
-
-    // ── Vertex helpers ────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns four parallel spreads describing the 8 corners of this node's bounding box.
-    /// </summary>
-    /// <remarks>
-    /// Corner order follows a binary-index convention:
-    /// bit 0 → X axis, bit 1 → Y axis, bit 2 → Z axis
-    /// (0 = minimum, 1 = maximum on that axis).
-    /// </remarks>
-    /// <param name="positions">
-    /// World-space homogeneous coordinates of each corner (8 <see cref="Vector4"/> values, w = 1).
-    /// </param>
-    /// <param name="levels">
-    /// Octree depth level of this node, repeated 8 times.
-    /// </param>
-    /// <param name="indices">
-    /// Per-corner index 0–7, identifying which corner of the box each entry represents.
-    /// </param>
-    /// <param name="boxIds">
-    /// <see cref="NodeId"/> of this node repeated 8 times.
-    /// Use this as a direct GPU buffer index into any per-node buffer that is sized to
-    /// <c>OctreeFlowReader.TotalNodes</c> and written at position <see cref="NodeId"/>
-    /// (e.g. <c>perNodeBuffer[boxId]</c> inside a shader).
-    /// </param>
-    public void GetVertices(
-        out IReadOnlyList<Vector4> positions,
-        out IReadOnlyList<int> levels,
-        out IReadOnlyList<int> indices,
-        out IReadOnlyList<int> boxIds)
-    {
-        float minX = BoundingBox.Minimum.X, minY = BoundingBox.Minimum.Y, minZ = BoundingBox.Minimum.Z;
-        float maxX = BoundingBox.Maximum.X, maxY = BoundingBox.Maximum.Y, maxZ = BoundingBox.Maximum.Z;
-
-        var pos  = new Vector4[8];
-        var lvls = new int[8];
-        var idx  = new int[8];
-        var ids  = new int[8];
-
-        for (int i = 0; i < 8; i++)
-        {
-            pos[i] = new Vector4(
-                (i & 1) != 0 ? maxX : minX,
-                (i & 2) != 0 ? maxY : minY,
-                (i & 4) != 0 ? maxZ : minZ,
-                1f);
-            lvls[i] = Level;
-            idx[i]  = i;
-            ids[i]  = NodeId;
-        }
-
-        positions = pos;
-        levels    = lvls;
-        indices   = idx;
-        boxIds    = ids;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

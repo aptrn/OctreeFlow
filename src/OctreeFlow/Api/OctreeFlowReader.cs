@@ -185,16 +185,16 @@ public class OctreeFlowReader : IDisposable
 
     /// <summary>
     /// Returns a flat registry of every feature across all three buffer classes.
-    /// Key   = feature name (e.g., "Point_Position", "BF_Level", "Vertex_NodeID").
+    /// Key   = feature name (e.g., "Point_Position", "BF_Level").
     /// Value = (BufferClass, DataType) where:
-    ///   BufferClass ∈ { "Point", "BF", "Vertex" }
+    ///   BufferClass ∈ { "Point", "BF" }
     ///   DataType    ∈ { "Vector", "Float", "Int" }
     ///
     /// Point features are dynamic (depend on the PLY file).
-    /// BF and Vertex features are fixed and always present after Initialize().
+    /// BF features are fixed and always present after Initialize().
     ///
     /// Use this in VL to drive a single ForEach that dispatches to the right buffer
-    /// based on the two tag strings, instead of maintaining three separate loops.
+    /// from the tag strings, instead of maintaining separate Point vs BF loops.
     /// </summary>
     public IReadOnlyDictionary<string, (string BufferClass, string DataType)> GetFeatures()
     {
@@ -218,12 +218,6 @@ public class OctreeFlowReader : IDisposable
         foreach (var kvp in bf.FeaturesFloat32) dict[kvp.Key] = ("BF", "Float");
         foreach (var kvp in bf.FeaturesInt32)   dict[kvp.Key] = ("BF", "Int");
 
-        // ── Vertex features (fixed set — enumerate from empty instance) ───────
-        var vx = new VertexBufferData(0);
-        foreach (var kvp in vx.FeaturesVector4) dict[kvp.Key] = ("Vertex", "Vector");
-        foreach (var kvp in vx.FeaturesFloat32) dict[kvp.Key] = ("Vertex", "Float");
-        foreach (var kvp in vx.FeaturesInt32)   dict[kvp.Key] = ("Vertex", "Int");
-
         return dict;
     }
 
@@ -244,23 +238,6 @@ public class OctreeFlowReader : IDisposable
     /// Total bytes required for a per-node Int32 structured buffer (e.g., BF_NodeID, BF_Level, BF_View).
     /// </summary>
     public long BFBufferSizeBytesInt32 => (long)TotalNodes * 4;
-
-    // ── Vertex (per node-corner) buffer sizing ────────────────────────────────
-
-    /// <summary>
-    /// Total number of octree box vertices = TotalNodes × 8.
-    /// </summary>
-    public int TotalVertices => TotalNodes * 8;
-
-    /// <summary>
-    /// Total bytes required for a per-vertex Vector4 structured buffer (e.g., Vertex_Position).
-    /// </summary>
-    public long VertexBufferSizeBytesVector4 => (long)TotalVertices * 16;
-
-    /// <summary>
-    /// Total bytes required for a per-vertex Int32 structured buffer (e.g., Vertex_NodeID, Vertex_Index, Vertex_Level, Vertex_ID).
-    /// </summary>
-    public long VertexBufferSizeBytesInt32 => (long)TotalVertices * 4;
 
     /// <summary>
     /// Checks if a Vector4 feature exists (Position, Colors, Normals).
@@ -520,24 +497,15 @@ public class OctreeFlowReader : IDisposable
     /// <summary>
     /// Builds the static per-node (BF) buffer data. Call once after Initialize().
     ///
-    /// LAYOUT — vertex granularity (NodeCount × 8 entries):
-    ///   Each node n occupies 8 consecutive slots: indices n*8 … n*8+7.
-    ///   All 8 slots carry identical node data, so that at dispatch index i the shader
-    ///   reads the correct owning-node value without any indirection:
-    ///     BF_Position[i]     = center of node (i/8)
-    ///     Vertex_Position[i] = corner (i%8) of node (i/8)  ← from BuildStaticVertexData
-    ///
-    /// This aligns NodeBufferData and VertexBufferData on the same index space, enabling
-    /// VL.Fuse ShaderNodes to read synchronized values from both buffers at dynamicIndexX.
+    /// LAYOUT — one slot per node: <c>BF_*[node.NodeId]</c> holds that node's data.
+    /// <c>Point_NodeID</c> uses the same IDs, so <c>BF_Density[Point_NodeID[p]]</c> is valid.
     ///
     /// BF_View is initialised to 0; call UpdateNodeViewState() every frame to refresh it.
-    /// UpdateNodeViewState sets only the i = n*8+0 slot to 1 for in-view nodes, so a box
-    /// shader dispatching on VertexCount shows exactly one box instance per node.
     /// </summary>
     /// <param name="maximumSize">
-    /// When &gt; 0, all feature arrays are allocated at this size instead of VertexCount (= NodeCount × 8).
-    /// Pass the same value to BuildStaticVertexData so both buffers share identical element counts.
-    /// Slots [VertexCount..maximumSize-1] are zero-padded.
+    /// When &gt; 0, all feature arrays are allocated at this size instead of NodeCount.
+    /// Pass the same value to GetCombinedAllActiveData if you pad point buffers to match.
+    /// Slots [NodeCount..maximumSize-1] are zero-padded.
     /// </param>
     public NodeBufferData BuildStaticNodeData(int maximumSize = 0)
     {
@@ -548,84 +516,23 @@ public class OctreeFlowReader : IDisposable
 
         var data = new NodeBufferData(nodeCount, maximumSize);
 
-        for (int n = 0; n < nodeCount; n++)
+        foreach (var node in nodes)
         {
-            var node = nodes[n];
+            int i = node.NodeId;
+
             var pos  = new Vector4(node.Center.X, node.Center.Y, node.Center.Z, 1f);
             var size = new Vector4(node.Size.X,   node.Size.Y,   node.Size.Z,   node.Spacing);
             var col  = node.AverageColor;
             var colV = new Vector4(col.R, col.G, col.B, col.A);
 
-            // Replicate each node's data across all 8 vertex slots so that BF and Vertex
-            // buffers are index-aligned: at slot i, both describe the same node (i/8).
-            for (int c = 0; c < 8; c++)
-            {
-                int vi = n * 8 + c;
-                data.BF_NodeID[vi]     = node.NodeId;
-                data.BF_Position[vi]   = pos;
-                data.BF_Size[vi]       = size;
-                data.BF_Color[vi]      = colV;
-                data.BF_Density[vi]    = node.PointDensity;
-                data.BF_Spacing[vi]    = node.Spacing;
-                data.BF_PointCount[vi] = node.PointCount;
-                data.BF_Level[vi]      = node.Level;
-                // BF_View[vi] stays 0; UpdateNodeViewState sets only vi = n*8+0 for in-view nodes
-            }
-        }
-
-        return data;
-    }
-
-    /// <summary>
-    /// Builds the static per-vertex buffer data for all octree bounding-box corners.
-    /// Call once after Initialize(). Returns TotalNodes × 8 entries.
-    ///
-    /// Layout: vertices are stored 8 consecutive entries per node in NodeId order.
-    ///   vertex i → node (i / 8), corner (i % 8).
-    ///
-    /// Index alignment: BuildStaticNodeData also uses vertex granularity, so both buffers
-    /// are index-aligned and can be read at the same dynamicIndexX in VL.Fuse shaders:
-    ///   BF_Position[i]     = center of owning node (i/8)
-    ///   Vertex_Position[i] = corner (i%8) of owning node (i/8)
-    ///
-    /// Use NodeBufferData.VertexCount (= NodeCount × 8) as the GPU dispatch count for
-    /// both box and vertex rendering passes.
-    /// </summary>
-    /// <param name="maximumSize">
-    /// When &gt; 0, all feature arrays are allocated at this size instead of VertexCount.
-    /// Pass the same value used for BuildStaticNodeData / GetCombinedAllActiveData.
-    /// Slots [VertexCount..maximumSize-1] are zero-padded.
-    /// </param>
-    public VertexBufferData BuildStaticVertexData(int maximumSize = 0)
-    {
-        EnsureInitialized();
-
-        var nodes = _nodeInfoCache.Values.OrderBy(n => n.NodeId).ToArray();
-        int nodeCount   = nodes.Length;
-        int vertexCount = nodeCount * 8;
-
-        var data = new VertexBufferData(vertexCount, maximumSize);
-
-        for (int n = 0; n < nodeCount; n++)
-        {
-            var node = nodes[n];
-            var bb = node.BoundingBox;
-            float minX = bb.Minimum.X, minY = bb.Minimum.Y, minZ = bb.Minimum.Z;
-            float maxX = bb.Maximum.X, maxY = bb.Maximum.Y, maxZ = bb.Maximum.Z;
-
-            for (int c = 0; c < 8; c++)
-            {
-                int vi = n * 8 + c;
-                data.Vertex_NodeID[vi]   = node.NodeId;
-                data.Vertex_Position[vi] = new Vector4(
-                    (c & 1) != 0 ? maxX : minX,
-                    (c & 2) != 0 ? maxY : minY,
-                    (c & 4) != 0 ? maxZ : minZ,
-                    1f);
-                data.Vertex_Index[vi]    = c;
-                data.Vertex_Level[vi]    = node.Level;
-                data.Vertex_ID[vi]       = vi;
-            }
+            data.BF_NodeID[i]     = node.NodeId;
+            data.BF_Position[i]   = pos;
+            data.BF_Size[i]       = size;
+            data.BF_Color[i]      = colV;
+            data.BF_Density[i]    = node.PointDensity;
+            data.BF_Spacing[i]    = node.Spacing;
+            data.BF_PointCount[i] = node.PointCount;
+            data.BF_Level[i]      = node.Level;
         }
 
         return data;
@@ -634,24 +541,18 @@ public class OctreeFlowReader : IDisposable
     /// <summary>
     /// Updates the BF_View array in an existing NodeBufferData to reflect the current traversal.
     /// Call this every frame after Traverse() / UpdateFrame() to keep BF_View in sync.
-    ///
-    /// Because NodeBufferData is stored at vertex granularity (8 slots per node), only slot
-    /// n*8+0 is set to 1 for in-view node n; the other 7 slots remain 0.
-    /// This allows a box shader dispatching on VertexCount to render exactly one instance
-    /// per in-view node by testing BF_View == 1, without any extra modulo logic in HLSL.
-    ///
     /// Re-upload nodeData.BF_View to your GPU buffer after calling this.
     /// </summary>
     /// <param name="viewingNodes">Nodes currently selected for display (TraversalResult.ViewingNodes).</param>
     /// <param name="nodeData">The NodeBufferData previously returned by BuildStaticNodeData().</param>
     public void UpdateNodeViewState(IEnumerable<NodeInfo> viewingNodes, NodeBufferData nodeData)
     {
-        Array.Clear(nodeData.BF_View, 0, nodeData.VertexCount);
+        Array.Clear(nodeData.BF_View, 0, nodeData.MaximumSize);
         foreach (var node in viewingNodes)
         {
-            int firstSlot = node.NodeId * 8;
-            if ((uint)firstSlot < (uint)nodeData.VertexCount)
-                nodeData.BF_View[firstSlot] = 1;   // only slot 0 of the 8; slots 1-7 stay 0
+            int id = node.NodeId;
+            if ((uint)id < (uint)nodeData.NodeCount)
+                nodeData.BF_View[id] = 1;
         }
     }
 
